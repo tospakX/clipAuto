@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#17171a">
+    <title>LocalCut — Local topic clips</title>
+    <link rel="stylesheet" href="/assets/app.css">
+    <script src="/assets/app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="LocalCut home">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M7.4 4.5 18 10.7a1.5 1.5 0 0 1 0 2.6L7.4 19.5A1.6 1.6 0 0 1 5 18.1V5.9a1.6 1.6 0 0 1 2.4-1.4Z"/></svg>
+        </span>
+        <span>LocalCut</span>
+      </a>
+      <div class="topbar-right">
+        <button class="health-pill is-checking" id="healthPill" type="button" aria-label="Check system status">
+          <span class="status-dot"></span>
+          <span id="healthLabel">Checking</span>
+        </button>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero-grid">
+        <div class="hero-copy">
+          <h1>Video in.<br>Clips out.</h1>
+          <p class="hero-description">
+            Paste a YouTube link. Local AI finds each topic and creates a separate clip.
+          </p>
+          <p class="format-note">9:16 · Full frame · Local processing</p>
+        </div>
+
+        <section class="composer-card" aria-labelledby="composerTitle">
+          <div class="card-heading">
+            <div>
+              <span class="step-label">New job</span>
+              <h2 id="composerTitle">Create clips</h2>
+            </div>
+            <span class="version-badge" id="versionBadge">Local</span>
+          </div>
+
+          <div class="system-notice is-hidden" id="systemNotice" role="alert">
+            <span class="notice-mark">!</span>
+            <div><strong>Setup needed</strong><p id="systemMessage"></p></div>
+          </div>
+
+          <div class="performance-notice is-hidden" id="performanceNotice" role="status">
+            <span class="notice-mark">i</span>
+            <div><strong>Performance</strong><p id="performanceMessage"></p></div>
+          </div>
+
+          <form id="clipForm" novalidate>
+            <label class="field-label" for="youtubeUrl">YouTube video</label>
+            <div class="url-field" id="urlField">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 13.5a4 4 0 0 0 5.7.1l2.3-2.3a4 4 0 0 0-5.7-5.7l-1.3 1.3 1.4 1.4L14.2 7a2 2 0 1 1 2.9 2.9l-2.3 2.3a2 2 0 0 1-2.9 0l-1.4 1.3Zm3-3-1.4 1.3a2 2 0 0 1-2.9 0 2 2 0 0 1 0-2.9l2.3-2.3a2 2 0 0 1 2.9 0l1.4-1.3a4 4 0 0 0-5.7-.1L7.8 7.5a4 4 0 0 0 5.7 5.7l1.4-1.3-1.4-1.4Z"/></svg>
+              <input id="youtubeUrl" name="url" type="url" placeholder="https://youtube.com/watch?v=..." autocomplete="url" required>
+              <button class="paste-button" id="pasteButton" type="button">Paste</button>
+            </div>
+            <p class="field-error" id="urlError" role="alert"></p>
+
+            <div class="settings-grid">
+              <fieldset>
+                <legend>Playback speed</legend>
+                <div class="select-wrap">
+                  <select id="speedSelect" aria-label="Playback speed">
+                    <option value="0.5">0.50×</option>
+                    <option value="0.75">0.75×</option>
+                    <option value="1" selected>1.00×</option>
+                    <option value="1.25">1.25×</option>
+                    <option value="1.5">1.50×</option>
+                    <option value="1.75">1.75×</option>
+                    <option value="2">2.00×</option>
+                  </select>
+                  <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5.5 7.5 4.5 4 4.5-4 1 1.1-5.5 5-5.5-5 1-1.1Z"/></svg>
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend>AI quality</legend>
+                <div class="select-wrap">
+                  <select id="qualitySelect" aria-label="Transcription quality">
+                    <option value="tiny">Fast (~75 MB)</option>
+                    <option value="small" selected>Balanced (~466 MB)</option>
+                    <option value="medium">High quality (~1.5 GB)</option>
+                  </select>
+                  <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5.5 7.5 4.5 4 4.5-4 1 1.1-5.5 5-5.5-5 1-1.1Z"/></svg>
+                </div>
+              </fieldset>
+            </div>
+
+            <button class="primary-button" id="startButton" type="submit" disabled>
+              <span id="startButtonLabel">Checking…</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m13.2 5 7 7-7 7-1.4-1.4 4.6-4.6H4v-2h12.4l-4.6-4.6L13.2 5Z"/></svg>
+            </button>
+          </form>
+        </section>
+      </section>
+
+      <section class="workspace is-hidden" id="workspace" aria-live="polite">
+        <div class="workspace-header">
+          <div>
+            <span class="step-label" id="workspaceLabel">Working</span>
+            <h2 id="workspaceTitle">Creating clips</h2>
+          </div>
+          <span class="progress-number" id="progressNumber">0%</span>
+        </div>
+
+        <div class="progress-track" aria-hidden="true"><span id="progressBar"></span></div>
+
+        <div class="processing-layout" id="processingLayout">
+          <div class="current-stage">
+            <div class="stage-orbit"><span></span><span></span><span></span></div>
+            <div>
+              <h3 id="currentStage">Starting local pipeline</h3>
+              <p id="stageHint">Keep this page open.</p>
+            </div>
+          </div>
+          <ol class="stage-list" id="stageList">
+            <li data-threshold="10"><span></span>Download</li>
+            <li data-threshold="30"><span></span>Transcribe</li>
+            <li data-threshold="56"><span></span>Scenes</li>
+            <li data-threshold="68"><span></span>Topics</li>
+            <li data-threshold="86"><span></span>Export</li>
+          </ol>
+        </div>
+
+        <div class="error-panel is-hidden" id="errorPanel">
+          <div class="error-icon">!</div>
+          <div><h3>Couldn’t finish</h3><p id="errorMessage"></p></div>
+          <button type="button" id="tryAgainButton">Try again</button>
+        </div>
+
+        <div class="results-panel is-hidden" id="resultsPanel">
+          <div class="results-intro">
+            <div class="success-mark">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9.2 16.2-4-4L3.8 13.6 9.2 19 20.5 7.7l-1.4-1.4-9.9 9.9Z"/></svg>
+            </div>
+            <div><h3>Clips ready</h3></div>
+          </div>
+          <div class="clip-grid" id="clipGrid"></div>
+        </div>
+
+        <details class="activity-log" id="activityLog">
+          <summary>Log</summary>
+          <ol id="eventList"></ol>
+        </details>
+      </section>
+    </main>
+
+    <footer>
+      <span>LocalCut <span id="footerVersion"></span></span>
+      <span>Runs locally</span>
+    </footer>
+  </body>
+</html>

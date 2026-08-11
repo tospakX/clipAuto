@@ -1,0 +1,17 @@
+name: Feature request
+description: Suggest a focused improvement
+title: "feat: "
+labels: [enhancement]
+body:
+  - type: textarea
+    attributes:
+      label: Problem
+      description: What workflow is currently difficult or impossible?
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest useful solution and any local-only constraints.
+    validations:
+      required: true

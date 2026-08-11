@@ -110,6 +110,15 @@ Tests cover marker recognition, multi-signal boundary fusion, dynamic Ollama mod
 Whisper runtime fallback, AV1 scene compatibility, FFmpeg export arguments, and pipeline-stage
 orchestration without downloading a real video.
 
+## Donations
+
+- Bitcoin (BTC): `bc1qrmlkg6r84m83w72c2f5hw3n8j06k7s5phfws67`
+- Litecoin (LTC): `La25t2KDaondzHUbrDf64cyQpjZTbo6hyt`
+
+## Development note
+
+Codex was used in a limited supporting role for debugging and frontend work.
+
 ## License
 
 No license is granted. The repository has no `LICENSE` file and remains all rights reserved by

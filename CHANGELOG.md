@@ -5,8 +5,15 @@ Semantic Versioning.
 
 ## Unreleased
 
+No unreleased changes.
+
+## 0.1.0 - 2026-08-12
+
 ### Added
 
+- Local YouTube download, faster-whisper transcription, PySceneDetect analysis, Ollama topic
+  reasoning, multi-signal boundary fusion, and vertical FFmpeg export.
+- Dependency checks, stage logging, documentation, and unit/integration tests.
 - Responsive local graphical interface with setup health, progress tracking, job restoration,
   result previews, downloads, and accessible desktop/mobile layouts.
 - Background job management and byte-range clip streaming without additional web dependencies.
@@ -28,12 +35,4 @@ Semantic Versioning.
 - FFmpeg exports are staged transactionally so encoding failures preserve previous clips.
 - Dependency checks now verify OpenCV plus the required H.264 and AAC encoders.
 - HTTP video streaming now handles suffix byte ranges correctly.
-
-## 0.1.0 - 2026-08-11
-
-### Added
-
-- Local YouTube download, faster-whisper transcription, PySceneDetect analysis, Ollama topic
-  reasoning, multi-signal boundary fusion, and vertical FFmpeg export.
-- Optional 1.25x pitch-preserving playback speed.
-- Dependency checks, stage logging, documentation, and unit/integration tests.
+- README setup and usage are organized as a copy-paste quick start with a product screenshot.

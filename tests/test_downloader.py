@@ -46,20 +46,30 @@ Order 1234 today
 
 class DownloaderTests(unittest.TestCase):
     @patch("youtube_clipper.downloader.subprocess.run")
-    def test_uses_video_id_in_output_to_avoid_cross_video_cache(self, run):
+    def test_uses_video_id_workspace_and_returns_video_identity(self, run):
         with tempfile.TemporaryDirectory() as tmp:
-            output = Path(tmp) / "source_abc123.mp4"
+            output = Path(tmp) / "abc123" / "source.mp4"
+            output.parent.mkdir()
             output.write_bytes(b"video")
             output.with_suffix(".info.json").write_text(
-                json.dumps({"description": "0:00 Intro\n1:30 Topic two"}), encoding="utf-8"
+                json.dumps(
+                    {
+                        "id": "abc123",
+                        "title": "A useful video",
+                        "description": "0:00 Intro\n1:30 Topic two",
+                    }
+                ),
+                encoding="utf-8",
             )
             run.return_value = Mock(returncode=0, stdout=f"{output}\n", stderr="")
             result = download_video("https://youtu.be/abc123", Path(tmp))
 
         self.assertEqual(result.path, output)
+        self.assertEqual(result.video_id, "abc123")
+        self.assertEqual(result.title, "A useful video")
         self.assertEqual([item.timestamp for item in result.timestamps], [0.0, 90.0])
         command = run.call_args.args[0]
-        self.assertIn("source_%(id)s.%(ext)s", " ".join(command))
+        self.assertIn("%(id)s/source.%(ext)s", " ".join(command))
         self.assertIn("--write-info-json", command)
 
     @patch("youtube_clipper.downloader.subprocess.run")

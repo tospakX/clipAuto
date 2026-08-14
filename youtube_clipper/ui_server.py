@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
+import re
 import threading
 import uuid
 import webbrowser
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -16,7 +18,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from . import __version__
 from .config import (
@@ -36,7 +38,22 @@ ALLOWED_WHISPER_MODELS = ("tiny", "base", "small", "medium", "large-v3")
 
 
 class JobBusyError(RuntimeError):
-    """Raised when a second media-heavy job is submitted."""
+    """Backward-compatible error for a duplicate active single job."""
+
+
+def _youtube_video_id(parsed) -> str | None:
+    host = (parsed.hostname or "").lower()
+    parts = [unquote(part) for part in parsed.path.split("/") if part]
+    if host == "youtu.be":
+        candidate = parts[0] if parts else ""
+    elif parsed.path.rstrip("/") == "/watch":
+        candidate = parse_qs(parsed.query).get("v", [""])[0]
+    elif parts and parts[0] in {"shorts", "embed", "live"}:
+        candidate = parts[1] if len(parts) > 1 else ""
+    else:
+        candidate = ""
+    is_safe = candidate and re.fullmatch(r"[A-Za-z0-9_-]+", candidate)
+    return candidate if is_safe else None
 
 
 def validate_youtube_url(value: str) -> str:
@@ -45,9 +62,10 @@ def validate_youtube_url(value: str) -> str:
     parsed = urlparse(value)
     host = (parsed.hostname or "").lower()
     is_youtube = host == "youtu.be" or host == "youtube.com" or host.endswith(".youtube.com")
-    if parsed.scheme not in {"http", "https"} or not is_youtube:
+    video_id = _youtube_video_id(parsed)
+    if parsed.scheme not in {"http", "https"} or not is_youtube or video_id is None:
         raise ValueError("Paste a valid youtube.com or youtu.be video URL")
-    return value
+    return f"https://www.youtube.com/watch?v={video_id}"
 
 
 def _now() -> str:
@@ -60,7 +78,8 @@ class ClipJob:
     url: str
     speed: float
     whisper_model: str
-    status: str = "queued"
+    video_id: str
+    status: str = "waiting"
     progress: int = 0
     stage: str = "Waiting to start"
     created_at: str = field(default_factory=_now)
@@ -72,6 +91,8 @@ class ClipJob:
     def public(self) -> dict[str, object]:
         return {
             "id": self.id,
+            "url": self.url,
+            "video_id": self.video_id,
             "status": self.status,
             "progress": self.progress,
             "stage": self.stage,
@@ -105,27 +126,74 @@ class JobManager:
         self.pipeline_runner = pipeline_runner
         self._jobs: dict[str, ClipJob] = {}
         self._lock = threading.Lock()
+        self._waiting: deque[str] = deque()
+        self._worker: threading.Thread | None = None
 
     def start(self, url: str, speed: float, whisper_model: str) -> dict[str, object]:
-        url = validate_youtube_url(url)
+        submission = self.enqueue([url], speed, whisper_model)
+        if not submission["jobs"]:
+            raise JobBusyError("This video is already waiting or processing")
+        return submission["jobs"][0]
+
+    def enqueue(
+        self, urls: list[str], speed: float, whisper_model: str
+    ) -> dict[str, list[object]]:
+        if not urls:
+            raise ValueError("Add at least one YouTube video URL")
         if speed not in ALLOWED_SPEEDS:
             raise ValueError(f"Speed must be one of {ALLOWED_SPEEDS}")
         if whisper_model not in ALLOWED_WHISPER_MODELS:
             raise ValueError("Choose a supported transcription quality")
+        normalized = [validate_youtube_url(value) for value in urls]
 
         with self._lock:
-            if any(job.status in {"queued", "running"} for job in self._jobs.values()):
-                raise JobBusyError("A clipping job is already running")
-            job = ClipJob(uuid.uuid4().hex[:12], url, speed, whisper_model)
-            self._jobs[job.id] = job
+            active_ids = {
+                job.video_id
+                for job in self._jobs.values()
+                if job.status in {"waiting", "downloading", "analyzing", "clipping"}
+            }
+            jobs: list[dict[str, object]] = []
+            duplicates: list[str] = []
+            for url in normalized:
+                video_id = str(parse_qs(urlparse(url).query)["v"][0])
+                if video_id in active_ids:
+                    duplicates.append(url)
+                    continue
+                active_ids.add(video_id)
+                job = ClipJob(uuid.uuid4().hex[:12], url, speed, whisper_model, video_id)
+                self._jobs[job.id] = job
+                self._waiting.append(job.id)
+                jobs.append(job.public())
 
-        threading.Thread(target=self._run, args=(job.id,), daemon=True).start()
-        return job.public()
+            if jobs and (self._worker is None or not self._worker.is_alive()):
+                self._worker = threading.Thread(
+                    target=self._work_loop,
+                    daemon=True,
+                    name="clipauto-queue",
+                )
+                self._worker.start()
+        return {"jobs": jobs, "duplicates": duplicates}
+
+    def list(self) -> list[dict[str, object]]:
+        with self._lock:
+            return [job.public() for job in self._jobs.values()]
 
     def get(self, job_id: str) -> dict[str, object] | None:
         with self._lock:
             job = self._jobs.get(job_id)
             return job.public() if job else None
+
+    def remove(self, job_id: str) -> bool:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or job.status != "waiting":
+                return False
+            try:
+                self._waiting.remove(job_id)
+            except ValueError:
+                return False
+            del self._jobs[job_id]
+            return True
 
     def output_for(self, job_id: str, filename: str) -> Path | None:
         with self._lock:
@@ -140,18 +208,48 @@ class JobManager:
     def _update(self, job_id: str, progress: int, stage: str) -> None:
         with self._lock:
             job = self._jobs[job_id]
-            job.status = "running"
+            if progress >= 86:
+                job.status = "clipping"
+            elif progress >= 25:
+                job.status = "analyzing"
+            else:
+                job.status = "downloading"
             job.progress = max(job.progress, max(0, min(100, progress)))
             job.stage = stage
-            job.events.append({"time": _now(), "progress": job.progress, "stage": stage})
+            job.events.append(
+                {
+                    "time": _now(),
+                    "progress": job.progress,
+                    "stage": stage,
+                    "status": job.status,
+                }
+            )
             job.events = job.events[-20:]
+
+    def _work_loop(self) -> None:
+        while True:
+            with self._lock:
+                if not self._waiting:
+                    self._worker = None
+                    return
+                job_id = self._waiting.popleft()
+                if job_id not in self._jobs:
+                    continue
+            self._run(job_id)
 
     def _run(self, job_id: str) -> None:
         with self._lock:
             job = self._jobs[job_id]
-            job.status = "running"
-            job.stage = "Starting local pipeline"
-            job.events.append({"time": _now(), "progress": 0, "stage": job.stage})
+            job.status = "downloading"
+            job.stage = "Preparing download"
+            job.events.append(
+                {
+                    "time": _now(),
+                    "progress": 0,
+                    "stage": job.stage,
+                    "status": job.status,
+                }
+            )
             url, speed, model = job.url, job.speed, job.whisper_model
 
         callback: ProgressCallback = partial(self._update, job_id)
@@ -214,6 +312,8 @@ class UIRequestHandler(BaseHTTPRequestHandler):
             self._asset(path.removeprefix("/assets/"))
         elif path == "/api/health":
             self._health()
+        elif path == "/api/jobs":
+            self._json(HTTPStatus.OK, {"jobs": self.server.manager.list()})
         elif path.startswith("/api/jobs/"):
             self._job(path.rsplit("/", 1)[-1])
         elif path.startswith("/clips/"):
@@ -227,16 +327,39 @@ class UIRequestHandler(BaseHTTPRequestHandler):
             return
         try:
             payload = self._read_json()
-            job = self.server.manager.start(
-                str(payload.get("url", "")),
+            raw_urls = payload.get("urls")
+            if raw_urls is None and "url" in payload:
+                raw_urls = [payload["url"]]
+            if (
+                not isinstance(raw_urls, list)
+                or not 1 <= len(raw_urls) <= 100
+                or any(not isinstance(value, str) for value in raw_urls)
+            ):
+                raise ValueError("urls must be a list of 1 to 100 YouTube links")
+            submission = self.server.manager.enqueue(
+                raw_urls,
                 float(payload.get("speed", 1.0)),
                 str(payload.get("whisper_model", DEFAULT_WHISPER_MODEL)),
             )
-            self._json(HTTPStatus.ACCEPTED, job)
+            self._json(HTTPStatus.ACCEPTED, submission)
         except JobBusyError as exc:
             self._json(HTTPStatus.CONFLICT, {"error": str(exc)})
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        path = urlparse(self.path).path
+        if not path.startswith("/api/jobs/"):
+            self._json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
+            return
+        job_id = path.rsplit("/", 1)[-1]
+        if self.server.manager.remove(job_id):
+            self._json(HTTPStatus.OK, {"removed": True})
+        else:
+            self._json(
+                HTTPStatus.CONFLICT,
+                {"error": "Only waiting queue items can be removed"},
+            )
 
     def _health(self) -> None:
         try:

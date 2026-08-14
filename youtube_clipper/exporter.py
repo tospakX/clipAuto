@@ -17,6 +17,7 @@ from .config import (
     OUTPUT_VIDEO_CODEC,
     OUTPUT_WIDTH,
 )
+from .naming import safe_component
 
 LOGGER = logging.getLogger(__name__)
 ExportProgress = Callable[[int, int], None]
@@ -89,6 +90,7 @@ def export_clips(
     output_dir: Path,
     speed: float = 1.0,
     progress_callback: ExportProgress | None = None,
+    clip_names: list[str] | None = None,
 ) -> list[Path]:
     if speed not in ALLOWED_SPEEDS:
         raise ValueError(f"speed must be one of {ALLOWED_SPEEDS}")
@@ -100,15 +102,23 @@ def export_clips(
         raise ValueError("clip boundaries must be inside the video duration")
     if any(current >= following for current, following in zip(starts, starts[1:], strict=False)):
         raise ValueError("clip boundaries must be in strictly increasing order")
+    if clip_names is not None and len(clip_names) != len(starts):
+        raise ValueError("provide exactly one name per clip boundary")
     output_dir.mkdir(parents=True, exist_ok=True)
     outputs: list[Path] = []
     pending_outputs: list[Path] = []
     ends = starts[1:] + [duration]
     token = uuid.uuid4().hex[:8]
+    number_width = max(2, len(str(len(starts))))
     try:
         for index, (start, end) in enumerate(zip(starts, ends, strict=True), start=1):
-            output = output_dir / f"part_{index:02d}.mp4"
-            pending = output_dir / f".part_{index:02d}.{token}.pending.mp4"
+            if clip_names is None:
+                filename = f"part_{index:02d}.mp4"
+            else:
+                topic = safe_component(clip_names[index - 1], f"topic-{index:02d}", 64)
+                filename = f"{index:0{number_width}d}_{topic}.mp4"
+            output = output_dir / filename
+            pending = output_dir / f".{output.stem}.{token}.pending.mp4"
             pending_outputs.append(pending)
             LOGGER.info("Exporting part %02d (%.2fs to %.2fs)", index, start, end)
             try:
@@ -141,7 +151,8 @@ def export_clips(
 
     # Remove only obsolete files created by this tool, and only after every new export succeeds.
     output_names = {path.name for path in outputs}
-    for old_output in output_dir.glob("part_*.mp4"):
-        if re.fullmatch(r"part_\d+\.mp4", old_output.name) and old_output.name not in output_names:
+    managed_pattern = r"part_\d+\.mp4" if clip_names is None else r"\d{2,}_[a-z0-9._-]+\.mp4"
+    for old_output in output_dir.glob("*.mp4"):
+        if re.fullmatch(managed_pattern, old_output.name) and old_output.name not in output_names:
             old_output.unlink()
     return outputs

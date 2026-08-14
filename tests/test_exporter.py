@@ -69,6 +69,46 @@ class ExportCommandTests(unittest.TestCase):
         self.assertEqual(progress, [(1, 2), (2, 2)])
 
     @patch("youtube_clipper.exporter.subprocess.run")
+    def test_descriptive_names_are_numbered_safe_and_replace_stale_managed_clips(self, run):
+        def create_output(command, **_kwargs):
+            Path(command[-1]).write_bytes(b"new")
+
+        run.side_effect = create_output
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            (output_dir / "03_old-topic.mp4").write_bytes(b"stale")
+            (output_dir / "notes.mp4").write_bytes(b"keep")
+
+            outputs = export_clips(
+                Path("source.mp4"),
+                [0.0, 10.0],
+                20.0,
+                output_dir,
+                clip_names=["Camera setup", "AUX / unsafe? title"],
+            )
+
+            self.assertEqual(
+                [path.name for path in outputs],
+                ["01_camera-setup.mp4", "02_aux-unsafe-title.mp4"],
+            )
+            self.assertFalse((output_dir / "03_old-topic.mp4").exists())
+            self.assertTrue((output_dir / "notes.mp4").exists())
+
+    @patch("youtube_clipper.exporter.subprocess.run")
+    def test_clip_name_count_must_match_boundaries_before_ffmpeg(self, run):
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaisesRegex(
+            ValueError, "one name per clip boundary"
+        ):
+            export_clips(
+                Path("source.mp4"),
+                [0.0, 10.0],
+                20.0,
+                Path(tmp),
+                clip_names=["only one"],
+            )
+        run.assert_not_called()
+
+    @patch("youtube_clipper.exporter.subprocess.run")
     def test_failed_export_preserves_previous_complete_output_set(self, run):
         calls = 0
 

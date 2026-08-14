@@ -1,6 +1,9 @@
 .clipper-work/
 .venv/
 .ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
 __pycache__/
 *.egg-info/
 build/

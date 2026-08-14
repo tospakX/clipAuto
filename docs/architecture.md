@@ -5,16 +5,17 @@ accepts ordinary Python values and returns ordinary values, which keeps componen
 and makes unit testing possible without loading models or processing video.
 
 ```text
-CLI
- └─ dependency check
-     └─ yt-dlp download
-         ├─ faster-whisper transcript + word timestamps
-         ├─ PySceneDetect visual transitions
-         ├─ YouTube description and chapter timestamps
-         └─ explicit spoken-marker detection
-             └─ Ollama semantic boundary reasoning
-                 └─ evidence fusion
-                     └─ FFmpeg 9:16 exports
+CLI / local web queue
+ └─ sequential job worker
+     └─ dependency check
+         └─ yt-dlp download into .clipper-work/<video-id>/
+             ├─ faster-whisper transcript + word timestamps
+             ├─ PySceneDetect visual transitions
+             ├─ YouTube description and chapter timestamps
+             └─ explicit spoken-marker detection
+                 └─ Ollama semantic boundary reasoning
+                     └─ evidence fusion
+                         └─ FFmpeg exports into output/<title>-<video-id>/clips/
 ```
 
 ## Module ownership
@@ -30,6 +31,8 @@ CLI
 | `ollama.py` | Model discovery and semantic reasoning | Revise model policy or prompt |
 | `boundaries.py` | Spoken markers and evidence fusion | Add phrases or scoring signals |
 | `exporter.py` | FFmpeg filters and encoding | Add framing or encoding profiles |
+| `naming.py` | Portable directory and filename components | Revise filesystem naming policy |
+| `topics.py` | Descriptive per-boundary clip names | Add another topic-label source |
 | `pipeline.py` | Stage orchestration and logging | Add a stage without changing CLI |
 | `cli.py` | User-facing arguments and exit codes | Expose a new pipeline option |
 | `ui_server.py` | Local HTTP API, job state, and clip streaming | Add UI-facing operations |
@@ -39,9 +42,16 @@ Shared timestamped data structures live in `types.py`. Processing modules should
 CLI, and the CLI should not contain processing logic.
 
 The graphical interface uses Python's local threaded HTTP server and packaged static assets, so
-it adds no web-framework or JavaScript-build dependency. `JobManager` runs one heavyweight media
-job at a time, receives progress events from `pipeline.py`, and supports HTTP byte ranges for
-browser video previews. The server binds to loopback by default.
+it adds no web-framework or JavaScript-build dependency. `JobManager` owns a lock-protected FIFO
+of immutable job settings and starts at most one short-lived worker thread. The worker processes
+one heavyweight media job at a time and keeps looping after item-level failures. Jobs expose
+`waiting`, `downloading`, `analyzing`, `clipping`, `completed`, and `failed` states. Only waiting
+items can be removed. The server also supports HTTP byte ranges for browser video previews and
+binds to loopback by default.
+
+YouTube URLs are normalized to their video ID before active-queue duplicate checks. Completed and
+failed jobs remain visible for the lifetime of the local server, while progress history is capped
+per item. Media bytes are streamed from disk rather than held in job state.
 
 ## Boundary strategy
 
@@ -59,7 +69,8 @@ bias.
 Long transcripts are divided at transcript-segment boundaries into overlapping reasoning windows.
 Results are validated, merged, and deduplicated so no middle section is discarded. FFmpeg encodes
 to hidden pending files and publishes the numbered set only after every clip succeeds, preserving
-the previous complete set when encoding fails.
+the previous complete set when encoding fails. Topic filenames prefer creator chapter titles,
+then Ollama's semantic reason, then nearby transcript text, with a deterministic numbered fallback.
 
 ## Upgrade guidelines
 

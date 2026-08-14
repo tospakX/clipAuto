@@ -23,7 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="youtube-clipper",
         description="Split a multi-topic YouTube video into local short-form clips.",
     )
-    parser.add_argument("url", nargs="?", help="YouTube video URL")
+    parser.add_argument("urls", nargs="*", metavar="URL", help="one or more YouTube video URLs")
     parser.add_argument("--speed", type=float, choices=ALLOWED_SPEEDS, default=1.0)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--work-dir", type=Path, default=DEFAULT_WORK_DIR)
@@ -69,19 +69,26 @@ def main(argv: list[str] | None = None) -> int:
                 open_browser=not args.no_browser,
             )
             return 0
-        if not args.url:
+        if not args.urls:
             raise ValueError("a YouTube URL is required (or use --check)")
-        run_pipeline(
-            args.url,
-            args.output_dir,
-            args.work_dir,
-            args.speed,
-            args.whisper_model,
-            args.whisper_device,
-            args.whisper_compute_type,
-            args.ollama_url,
-        )
-        return 0
+        failures = 0
+        for index, url in enumerate(args.urls, start=1):
+            logging.info("Processing video %d of %d", index, len(args.urls))
+            try:
+                run_pipeline(
+                    url,
+                    args.output_dir,
+                    args.work_dir,
+                    args.speed,
+                    args.whisper_model,
+                    args.whisper_device,
+                    args.whisper_compute_type,
+                    args.ollama_url,
+                )
+            except (DependencyError, OSError, RuntimeError, ValueError) as exc:
+                failures += 1
+                logging.error("Video %d failed: %s", index, exc)
+        return 1 if failures else 0
     except (DependencyError, OSError, RuntimeError, ValueError) as exc:
         logging.error("%s", exc)
         return 1

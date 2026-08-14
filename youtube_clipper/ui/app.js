@@ -1,16 +1,16 @@
 const state = {
-  jobId: null,
   pollTimer: null,
   ready: false,
-  running: false,
+  submitting: false,
+  jobs: [],
 };
 
 const $ = (selector) => document.querySelector(selector);
-const $$ = (selector) => [...document.querySelectorAll(selector)];
+const ACTIVE_STATUSES = new Set(["waiting", "downloading", "analyzing", "clipping"]);
 
 const elements = {
   form: $("#clipForm"),
-  url: $("#youtubeUrl"),
+  urls: $("#youtubeUrls"),
   urlField: $("#urlField"),
   urlError: $("#urlError"),
   speed: $("#speedSelect"),
@@ -20,22 +20,13 @@ const elements = {
   healthPill: $("#healthPill"),
   healthLabel: $("#healthLabel"),
   workspace: $("#workspace"),
-  workspaceLabel: $("#workspaceLabel"),
-  workspaceTitle: $("#workspaceTitle"),
-  progressNumber: $("#progressNumber"),
-  progressBar: $("#progressBar"),
-  currentStage: $("#currentStage"),
-  processingLayout: $("#processingLayout"),
-  errorPanel: $("#errorPanel"),
-  errorMessage: $("#errorMessage"),
-  resultsPanel: $("#resultsPanel"),
-  clipGrid: $("#clipGrid"),
-  eventList: $("#eventList"),
+  queueCount: $("#queueCount"),
+  queueList: $("#queueList"),
+  queueNotice: $("#queueNotice"),
   systemNotice: $("#systemNotice"),
   systemMessage: $("#systemMessage"),
   performanceNotice: $("#performanceNotice"),
   performanceMessage: $("#performanceMessage"),
-  stageHint: $("#stageHint"),
 };
 
 async function request(path, options = {}) {
@@ -50,32 +41,41 @@ async function request(path, options = {}) {
   return data;
 }
 
+function setSubmitting(submitting) {
+  state.submitting = submitting;
+  elements.startButton.disabled = submitting || !state.ready;
+  elements.startButtonLabel.textContent = submitting
+    ? "Adding…"
+    : state.ready
+      ? "Add to queue"
+      : "Setup needed";
+}
+
 async function checkHealth() {
   elements.healthPill.className = "health-pill is-checking";
   elements.healthLabel.textContent = "Checking";
   try {
     const health = await request("/api/health");
+    state.ready = true;
     elements.healthPill.className = "health-pill is-ready";
     elements.healthLabel.textContent = "Ready";
-    state.ready = true;
+    elements.healthPill.title = `Ollama models: ${health.models.join(", ")}`;
     elements.systemNotice.classList.add("is-hidden");
     const warnings = health.warnings || [];
     elements.performanceMessage.textContent = warnings.join(" ");
     elements.performanceNotice.classList.toggle("is-hidden", warnings.length === 0);
     $("#versionBadge").textContent = `v${health.version}`;
     $("#footerVersion").textContent = `v${health.version}`;
-    elements.healthPill.title = `Ollama models: ${health.models.join(", ")}`;
-    setRunning(state.running);
   } catch (error) {
+    state.ready = false;
     elements.healthPill.className = "health-pill is-error";
     elements.healthLabel.textContent = "Setup needed";
     elements.healthPill.title = error.message;
-    state.ready = false;
     elements.systemMessage.textContent = error.message;
     elements.systemNotice.classList.remove("is-hidden");
     elements.performanceNotice.classList.add("is-hidden");
-    setRunning(state.running);
   }
+  setSubmitting(false);
 }
 
 function setUrlError(message = "") {
@@ -83,149 +83,199 @@ function setUrlError(message = "") {
   elements.urlField.classList.toggle("has-error", Boolean(message));
 }
 
-function validUrl(value) {
+function youtubeVideoId(value) {
   try {
     const parsed = new URL(value);
-    return (parsed.protocol === "http:" || parsed.protocol === "https:") &&
-      (parsed.hostname === "youtu.be" || parsed.hostname === "youtube.com" || parsed.hostname.endsWith(".youtube.com"));
+    const host = parsed.hostname.toLowerCase();
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    if (host === "youtu.be") return parsed.pathname.split("/").filter(Boolean)[0] || null;
+    if (host !== "youtube.com" && !host.endsWith(".youtube.com")) return null;
+    if (parsed.pathname.replace(/\/$/, "") === "/watch") return parsed.searchParams.get("v");
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    if (["shorts", "embed", "live"].includes(parts[0])) return parts[1] || null;
   } catch {
-    return false;
+    return null;
   }
+  return null;
 }
 
-function setRunning(running) {
-  state.running = running;
-  elements.startButton.disabled = running || !state.ready;
-  elements.startButtonLabel.textContent = running
-    ? "Working…"
-    : state.ready
-      ? "Create clips"
-      : "Setup needed";
+function parseUrls(value) {
+  const urls = [];
+  const seen = new Set();
+  let duplicates = 0;
+  const invalid = [];
+  for (const candidate of value.split(/\s+/).map((item) => item.trim()).filter(Boolean)) {
+    const videoId = youtubeVideoId(candidate);
+    if (!videoId || !/^[A-Za-z0-9_-]+$/.test(videoId)) {
+      invalid.push(candidate);
+    } else if (seen.has(videoId)) {
+      duplicates += 1;
+    } else {
+      seen.add(videoId);
+      urls.push(candidate);
+    }
+  }
+  return { urls, duplicates, invalid };
 }
 
-async function startJob(event) {
+async function addToQueue(event) {
   event.preventDefault();
-  const url = elements.url.value.trim();
-  if (!validUrl(url)) {
-    setUrlError("Paste a valid YouTube video link");
-    elements.url.focus();
+  const parsed = parseUrls(elements.urls.value);
+  if (parsed.invalid.length) {
+    setUrlError(`${parsed.invalid.length} link${parsed.invalid.length === 1 ? " is" : "s are"} not a valid YouTube video URL`);
+    elements.urls.focus();
+    return;
+  }
+  if (!parsed.urls.length) {
+    setUrlError("Add at least one YouTube video link");
+    elements.urls.focus();
     return;
   }
   setUrlError();
-  setRunning(true);
-  resetWorkspace();
-  elements.workspace.classList.remove("is-hidden");
-  elements.workspace.scrollIntoView({ behavior: "smooth", block: "start" });
+  setSubmitting(true);
   try {
-    const job = await request("/api/jobs", {
+    const submission = await request("/api/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        url,
+        urls: parsed.urls,
         speed: Number(elements.speed.value),
         whisper_model: elements.quality.value,
       }),
     });
-    state.jobId = job.id;
-    window.localStorage.setItem("localcutJobId", job.id);
-    window.history.replaceState({}, "", `/?job=${job.id}`);
-    renderJob(job);
-    schedulePoll();
+    elements.urls.value = "";
+    const duplicateCount = parsed.duplicates + (submission.duplicates || []).length;
+    showQueueNotice(
+      duplicateCount
+        ? `${duplicateCount} duplicate link${duplicateCount === 1 ? " was" : "s were"} skipped.`
+        : "",
+    );
+    await loadQueue();
+    elements.workspace.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
-    renderFailure(error.message);
-    setRunning(false);
+    setUrlError(error.message);
+  } finally {
+    setSubmitting(false);
   }
+}
+
+function showQueueNotice(message) {
+  elements.queueNotice.textContent = message;
+  elements.queueNotice.classList.toggle("is-hidden", !message);
 }
 
 function schedulePoll() {
   window.clearTimeout(state.pollTimer);
-  state.pollTimer = window.setTimeout(pollJob, 1100);
-}
-
-async function pollJob() {
-  if (!state.jobId) return;
-  try {
-    const job = await request(`/api/jobs/${state.jobId}`);
-    renderJob(job);
-    if (job.status === "queued" || job.status === "running") schedulePoll();
-    else setRunning(false);
-  } catch (error) {
-    renderFailure(error.message);
-    setRunning(false);
+  if (state.jobs.some((job) => ACTIVE_STATUSES.has(job.status))) {
+    state.pollTimer = window.setTimeout(loadQueue, 1000);
   }
 }
 
-function renderJob(job) {
-  const progress = Math.max(0, Math.min(100, job.progress || 0));
-  elements.progressNumber.textContent = `${progress}%`;
-  elements.progressBar.style.width = `${progress}%`;
-  elements.currentStage.textContent = job.stage;
-  renderStageHint(job);
-  renderStages(progress);
-  renderEvents(job.events || []);
-
-  if (job.status === "failed") renderFailure(job.error || "The local pipeline stopped");
-  if (job.status === "completed") renderResults(job.clips || []);
+async function loadQueue() {
+  try {
+    const payload = await request("/api/jobs");
+    state.jobs = payload.jobs || [];
+    renderQueue();
+    schedulePoll();
+  } catch (error) {
+    showQueueNotice(error.message);
+  }
 }
 
-function renderStageHint(job) {
-  if (!job.created_at) return;
-  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - Date.parse(job.created_at)) / 1000));
+function renderQueue() {
+  elements.workspace.classList.toggle("is-hidden", state.jobs.length === 0);
+  elements.queueCount.textContent = `${state.jobs.length} video${state.jobs.length === 1 ? "" : "s"}`;
+  elements.queueList.replaceChildren();
+  state.jobs.forEach((job, index) => elements.queueList.append(createJobCard(job, index)));
+}
+
+function elapsedTime(createdAt) {
+  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - Date.parse(createdAt)) / 1000));
   const minutes = Math.floor(elapsedSeconds / 60);
   const seconds = String(elapsedSeconds % 60).padStart(2, "0");
-  let note = "Working locally.";
-  if (job.progress >= 30 && job.progress < 56) {
-    note = "Transcription can take a while.";
-  } else if (job.progress >= 56 && job.progress < 68) {
-    note = "Reading the video frame by frame.";
-  } else if (job.progress >= 86 && job.progress < 100) {
-    note = "Encoding each clip.";
+  return `${minutes}:${seconds}`;
+}
+
+function createJobCard(job, index) {
+  const card = document.createElement("article");
+  card.className = `queue-item status-${job.status}`;
+
+  const header = document.createElement("div");
+  header.className = "queue-item-header";
+  const identity = document.createElement("div");
+  identity.className = "queue-identity";
+  const label = document.createElement("span");
+  label.textContent = `Video ${index + 1}`;
+  const title = document.createElement("h3");
+  title.textContent = job.video_id || "YouTube video";
+  const url = document.createElement("a");
+  url.href = job.url;
+  url.target = "_blank";
+  url.rel = "noreferrer";
+  url.textContent = job.url;
+  identity.append(label, title, url);
+
+  const actions = document.createElement("div");
+  actions.className = "queue-actions";
+  const status = document.createElement("span");
+  status.className = `status-badge status-${job.status}`;
+  status.textContent = job.status;
+  actions.append(status);
+  if (job.status === "waiting") {
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "remove-button";
+    remove.dataset.jobId = job.id;
+    remove.textContent = "Remove";
+    actions.append(remove);
   }
-  elements.stageHint.textContent = `${note} Elapsed: ${minutes}:${seconds}.`;
+  header.append(identity, actions);
+  card.append(header);
+
+  if (ACTIVE_STATUSES.has(job.status) && job.status !== "waiting") {
+    const progress = Math.max(0, Math.min(100, Number(job.progress) || 0));
+    const progressRow = document.createElement("div");
+    progressRow.className = "job-progress-row";
+    const stage = document.createElement("span");
+    stage.textContent = `${job.stage} · Elapsed ${elapsedTime(job.created_at)}`;
+    const percent = document.createElement("strong");
+    percent.textContent = `${progress}%`;
+    progressRow.append(stage, percent);
+    const track = document.createElement("div");
+    track.className = "job-progress-track";
+    const fill = document.createElement("span");
+    fill.style.width = `${progress}%`;
+    track.append(fill);
+    card.append(progressRow, track);
+  } else if (job.status === "waiting") {
+    const waiting = document.createElement("p");
+    waiting.className = "job-message";
+    waiting.textContent = "Waiting for earlier videos to finish.";
+    card.append(waiting);
+  }
+
+  if (job.status === "failed") {
+    const error = document.createElement("p");
+    error.className = "job-error";
+    error.textContent = job.error || "This video could not be processed.";
+    card.append(error);
+  }
+  if (job.status === "completed") {
+    const clips = document.createElement("div");
+    clips.className = "clip-grid";
+    (job.clips || []).forEach((clip) => clips.append(createClipCard(clip)));
+    card.append(clips);
+  }
+  if ((job.events || []).length) card.append(createEventLog(job.events));
+  return card;
 }
 
-function renderStages(progress) {
-  const items = $$("#stageList li");
-  items.forEach((item, index) => {
-    const threshold = Number(item.dataset.threshold);
-    const next = items[index + 1] ? Number(items[index + 1].dataset.threshold) : 101;
-    item.classList.toggle("is-done", progress >= next || progress === 100);
-    item.classList.toggle("is-active", progress >= threshold && progress < next);
-  });
-}
-
-function renderEvents(events) {
-  elements.eventList.replaceChildren();
-  events.forEach((event) => {
-    const item = document.createElement("li");
-    const time = new Date(event.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-    item.textContent = `${time} — ${event.stage} (${event.progress}%)`;
-    elements.eventList.append(item);
-  });
-}
-
-function renderFailure(message) {
-  elements.processingLayout.classList.add("is-hidden");
-  elements.resultsPanel.classList.add("is-hidden");
-  elements.errorPanel.classList.remove("is-hidden");
-  elements.workspaceLabel.textContent = "Stopped";
-  elements.workspaceTitle.textContent = "Couldn’t finish";
-  elements.errorMessage.textContent = message;
-}
-
-function renderResults(clips) {
-  elements.processingLayout.classList.add("is-hidden");
-  elements.errorPanel.classList.add("is-hidden");
-  elements.resultsPanel.classList.remove("is-hidden");
-  elements.workspaceLabel.textContent = "Complete";
-  elements.workspaceTitle.textContent = `${clips.length} topic clip${clips.length === 1 ? "" : "s"} created`;
-  elements.clipGrid.replaceChildren();
-  clips.forEach((clip, index) => elements.clipGrid.append(createClipCard(clip, index)));
-}
-
-function createClipCard(clip, index) {
+function createClipCard(clip) {
   const card = document.createElement("article");
   card.className = "clip-card";
+  const title = document.createElement("div");
+  title.className = "clip-title";
+  title.textContent = clip.name;
   const preview = document.createElement("div");
   preview.className = "clip-preview";
   const video = document.createElement("video");
@@ -234,83 +284,63 @@ function createClipCard(clip, index) {
   video.preload = "metadata";
   video.playsInline = true;
   preview.append(video);
-
-  const meta = document.createElement("div");
-  meta.className = "clip-meta";
-  const name = document.createElement("div");
-  name.className = "clip-name";
-  const strong = document.createElement("strong");
-  strong.textContent = `Clip ${index + 1}`;
-  const filename = document.createElement("span");
-  filename.textContent = clip.name;
-  name.append(strong, filename);
-
   const download = document.createElement("a");
   download.className = "download-button";
   download.href = clip.url;
   download.download = clip.name;
-  download.title = `Download ${clip.name}`;
-  download.setAttribute("aria-label", `Download ${clip.name}`);
-  download.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M9.2 2h1.6v8.1l2.7-2.7 1.1 1.1-4.6 4.6-4.6-4.6 1.1-1.1 2.7 2.7V2ZM3 14h1.6v2h10.8v-2H17v3.6H3V14Z"/></svg>';
-  meta.append(name, download);
-  card.append(preview, meta);
+  download.textContent = "Download";
+  card.append(title, preview, download);
   return card;
 }
 
-function resetWorkspace() {
-  elements.processingLayout.classList.remove("is-hidden");
-  elements.errorPanel.classList.add("is-hidden");
-  elements.resultsPanel.classList.add("is-hidden");
-  elements.workspaceLabel.textContent = "Working";
-  elements.workspaceTitle.textContent = "Creating clips";
-  elements.progressNumber.textContent = "0%";
-  elements.progressBar.style.width = "0%";
-  elements.currentStage.textContent = "Starting local pipeline";
-  elements.stageHint.textContent = "Keep this page open.";
-  elements.eventList.replaceChildren();
-  renderStages(0);
+function createEventLog(events) {
+  const details = document.createElement("details");
+  details.className = "activity-log";
+  const summary = document.createElement("summary");
+  summary.textContent = "Activity";
+  const list = document.createElement("ol");
+  events.forEach((event) => {
+    const item = document.createElement("li");
+    const time = new Date(event.time).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    item.textContent = `${time} — ${event.stage} (${event.progress}%)`;
+    list.append(item);
+  });
+  details.append(summary, list);
+  return details;
 }
 
-async function restoreJob() {
-  const query = new URLSearchParams(window.location.search);
-  const jobId = query.get("job") || window.localStorage.getItem("localcutJobId");
-  if (!jobId || !/^[a-f0-9]{12}$/.test(jobId)) return;
-  state.jobId = jobId;
+async function removeWaiting(jobId) {
   try {
-    const job = await request(`/api/jobs/${jobId}`);
-    elements.workspace.classList.remove("is-hidden");
-    renderJob(job);
-    if (job.status === "queued" || job.status === "running") {
-      setRunning(true);
-      schedulePoll();
-    }
-  } catch {
-    state.jobId = null;
-    window.localStorage.removeItem("localcutJobId");
-    window.history.replaceState({}, "", "/");
+    await request(`/api/jobs/${jobId}`, { method: "DELETE" });
+    await loadQueue();
+  } catch (error) {
+    showQueueNotice(error.message);
+    await loadQueue();
   }
 }
 
 $("#pasteButton").addEventListener("click", async () => {
   try {
-    elements.url.value = await navigator.clipboard.readText();
+    const pasted = await navigator.clipboard.readText();
+    elements.urls.value = [elements.urls.value.trim(), pasted.trim()].filter(Boolean).join("\n");
     setUrlError();
-    elements.url.focus();
   } catch {
-    elements.url.focus();
+    // Clipboard access can be denied; focusing still makes manual paste immediate.
   }
+  elements.urls.focus();
 });
 
-elements.url.addEventListener("input", () => setUrlError());
-elements.form.addEventListener("submit", startJob);
+elements.urls.addEventListener("input", () => setUrlError());
+elements.form.addEventListener("submit", addToQueue);
 elements.healthPill.addEventListener("click", checkHealth);
-$("#tryAgainButton").addEventListener("click", () => {
-  state.jobId = null;
-  window.localStorage.removeItem("localcutJobId");
-  window.history.replaceState({}, "", "/");
-  elements.workspace.classList.add("is-hidden");
-  elements.url.focus();
+elements.queueList.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-job-id]");
+  if (button) removeWaiting(button.dataset.jobId);
 });
 
 checkHealth();
-restoreJob();
+loadQueue();

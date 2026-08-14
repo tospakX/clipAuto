@@ -24,6 +24,8 @@ _TIME_AT_END = re.compile(
 class DownloadedVideo:
     path: Path
     timestamps: tuple[VideoTimestamp, ...] = ()
+    title: str = "video"
+    video_id: str = "video"
 
 
 def _time_in_seconds(value: str) -> float | None:
@@ -102,8 +104,9 @@ def _read_metadata(video_path: Path) -> dict:
 
 def download_video(url: str, work_dir: Path) -> DownloadedVideo:
     work_dir.mkdir(parents=True, exist_ok=True)
-    # Include the YouTube ID so a later job cannot silently reuse a different video's source.
-    output_template = str(work_dir / "source_%(id)s.%(ext)s")
+    # Keep every source and its yt-dlp metadata in an ID-scoped workspace. YouTube IDs contain
+    # only portable filename characters and prevent equal video titles from sharing cache files.
+    output_template = str(work_dir / "%(id)s" / "source.%(ext)s")
     command = [
         "yt-dlp",
         "--no-playlist",
@@ -128,7 +131,10 @@ def download_video(url: str, work_dir: Path) -> DownloadedVideo:
     if not paths or not paths[-1].is_file():
         raise RuntimeError("yt-dlp completed but did not report a downloaded video path")
     video_path = paths[-1]
-    timestamps = timestamps_from_metadata(_read_metadata(video_path))
+    metadata = _read_metadata(video_path)
+    timestamps = timestamps_from_metadata(metadata)
+    video_id = str(metadata.get("id") or video_path.parent.name).strip() or "video"
+    title = str(metadata.get("title") or video_id).strip() or video_id
     LOGGER.info("Downloaded video: %s", video_path)
     LOGGER.info("Found %d YouTube description/chapter timestamps", len(timestamps))
-    return DownloadedVideo(video_path, timestamps)
+    return DownloadedVideo(video_path, timestamps, title, video_id)

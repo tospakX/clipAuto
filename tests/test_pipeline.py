@@ -22,13 +22,21 @@ class PipelineTests(unittest.TestCase):
     ):
         check.return_value = DependencyReport(("local-model",))
         video_timestamps = (VideoTimestamp(20, "Second topic", 0.95),)
-        download.return_value = DownloadedVideo(Path("source.mp4"), video_timestamps)
+        download.return_value = DownloadedVideo(
+            Path("work/abc123/source.mp4"),
+            video_timestamps,
+            "My Useful Video",
+            "abc123",
+        )
         transcribe.return_value = (
             [TranscriptSegment(0, 5, "Intro"), TranscriptSegment(20, 24, "Number two: details")],
             "en",
         )
         reasoner.return_value.suggest_boundaries.return_value = [BoundarySuggestion(20, 0.9)]
-        export.return_value = [Path("output/part_01.mp4"), Path("output/part_02.mp4")]
+        export.return_value = [
+            Path("output/my-useful-video-abc123/clips/01_intro.mp4"),
+            Path("output/my-useful-video-abc123/clips/02_second-topic.mp4"),
+        ]
         progress = []
         with tempfile.TemporaryDirectory() as tmp:
             result = run_pipeline(
@@ -48,12 +56,13 @@ class PipelineTests(unittest.TestCase):
             video_timestamps,
         )
         export.assert_called_once_with(
-            Path("source.mp4"),
+            Path("work/abc123/source.mp4"),
             [0.0, 20.0],
             45.0,
-            unittest.mock.ANY,
+            Path(tmp) / "out" / "my-useful-video-abc123" / "clips",
             1.25,
             unittest.mock.ANY,
+            clip_names=["intro", "second-topic"],
         )
 
 

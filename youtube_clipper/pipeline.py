@@ -16,8 +16,10 @@ from .dependencies import check_dependencies
 from .downloader import download_video
 from .exporter import export_clips
 from .media import get_duration
+from .naming import video_directory_name
 from .ollama import OllamaBoundaryReasoner
 from .scenes import detect_scene_changes
+from .topics import topic_names
 from .transcriber import transcribe_video
 
 LOGGER = logging.getLogger(__name__)
@@ -47,6 +49,10 @@ def run_pipeline(
     _report(progress_callback, 10, "Downloading the source video")
     download = download_video(url, work_dir)
     video_path = download.path
+    video_work_dir = video_path.parent
+    video_output_dir = (
+        output_dir / video_directory_name(download.title, download.video_id) / "clips"
+    )
     timestamp_note = (
         f"{len(download.timestamps)} description timestamps found"
         if download.timestamps
@@ -54,7 +60,7 @@ def run_pipeline(
     )
     _report(progress_callback, 24, timestamp_note)
     duration = get_duration(video_path)
-    cached = load_analysis(work_dir, video_path, whisper_model)
+    cached = load_analysis(video_work_dir, video_path, whisper_model)
     if cached is None:
         _report(progress_callback, 30, "Preparing local transcription")
         segments, language = transcribe_video(
@@ -71,7 +77,7 @@ def run_pipeline(
             )
         _report(progress_callback, 56, "Finding visual transitions")
         scene_times = detect_scene_changes(video_path)
-        save_analysis(work_dir, video_path, whisper_model, segments, language, scene_times)
+        save_analysis(video_work_dir, video_path, whisper_model, segments, language, scene_times)
     else:
         LOGGER.info("Using cached transcript and scene analysis for %s", video_path)
         _report(progress_callback, 30, "Using cached video analysis")
@@ -99,19 +105,21 @@ def run_pipeline(
         video_timestamps=download.timestamps,
     )
     LOGGER.info("Final topic split: %d clips at %s", len(starts), starts)
+    names = topic_names(starts, download.timestamps, suggestions, segments)
     _report(progress_callback, 86, f"Exporting {len(starts)} clips")
     outputs = export_clips(
         video_path,
         starts,
         duration,
-        output_dir,
+        video_output_dir,
         speed,
         lambda current, total: _report(
             progress_callback,
             86 + round(current / total * 13),
             f"Exporting clip {current} of {total}",
         ),
+        clip_names=names,
     )
-    LOGGER.info("Finished: wrote %d clips to %s", len(outputs), output_dir)
+    LOGGER.info("Finished: wrote %d clips to %s", len(outputs), video_output_dir)
     _report(progress_callback, 100, "Your clips are ready")
     return outputs

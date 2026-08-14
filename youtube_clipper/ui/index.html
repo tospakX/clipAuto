@@ -16,20 +16,19 @@
         </span>
         <span>LocalCut</span>
       </a>
-      <div class="topbar-right">
-        <button class="health-pill is-checking" id="healthPill" type="button" aria-label="Check system status">
-          <span class="status-dot"></span>
-          <span id="healthLabel">Checking</span>
-        </button>
-      </div>
+      <button class="health-pill is-checking" id="healthPill" type="button" aria-label="Check system status">
+        <span class="status-dot"></span>
+        <span id="healthLabel">Checking</span>
+      </button>
     </header>
 
     <main>
       <section class="hero-grid">
         <div class="hero-copy">
-          <h1>Video in.<br>Clips out.</h1>
+          <h1>Videos in.<br>Clips out.</h1>
           <p class="hero-description">
-            Paste a YouTube link. Local AI finds each topic and creates a separate clip.
+            Add one or many YouTube links. Local AI processes them in order and keeps every
+            video's clips separate.
           </p>
           <p class="format-note">9:16 · Full frame · Local processing</p>
         </div>
@@ -37,8 +36,8 @@
         <section class="composer-card" aria-labelledby="composerTitle">
           <div class="card-heading">
             <div>
-              <span class="step-label">New job</span>
-              <h2 id="composerTitle">Create clips</h2>
+              <span class="step-label">Add videos</span>
+              <h2 id="composerTitle">Build your queue</h2>
             </div>
             <span class="version-badge" id="versionBadge">Local</span>
           </div>
@@ -47,17 +46,18 @@
             <span class="notice-mark">!</span>
             <div><strong>Setup needed</strong><p id="systemMessage"></p></div>
           </div>
-
           <div class="performance-notice is-hidden" id="performanceNotice" role="status">
             <span class="notice-mark">i</span>
             <div><strong>Performance</strong><p id="performanceMessage"></p></div>
           </div>
 
           <form id="clipForm" novalidate>
-            <label class="field-label" for="youtubeUrl">YouTube video</label>
+            <div class="field-heading">
+              <label class="field-label" for="youtubeUrls">YouTube videos</label>
+              <span>One link per line</span>
+            </div>
             <div class="url-field" id="urlField">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 13.5a4 4 0 0 0 5.7.1l2.3-2.3a4 4 0 0 0-5.7-5.7l-1.3 1.3 1.4 1.4L14.2 7a2 2 0 1 1 2.9 2.9l-2.3 2.3a2 2 0 0 1-2.9 0l-1.4 1.3Zm3-3-1.4 1.3a2 2 0 0 1-2.9 0 2 2 0 0 1 0-2.9l2.3-2.3a2 2 0 0 1 2.9 0l1.4-1.3a4 4 0 0 0-5.7-.1L7.8 7.5a4 4 0 0 0 5.7 5.7l1.4-1.3-1.4-1.4Z"/></svg>
-              <input id="youtubeUrl" name="url" type="url" placeholder="https://youtube.com/watch?v=..." autocomplete="url" required>
+              <textarea id="youtubeUrls" name="urls" rows="4" placeholder="https://youtube.com/watch?v=...&#10;https://youtu.be/..." required></textarea>
               <button class="paste-button" id="pasteButton" type="button">Paste</button>
             </div>
             <p class="field-error" id="urlError" role="alert"></p>
@@ -102,57 +102,19 @@
       <section class="workspace is-hidden" id="workspace" aria-live="polite">
         <div class="workspace-header">
           <div>
-            <span class="step-label" id="workspaceLabel">Working</span>
-            <h2 id="workspaceTitle">Creating clips</h2>
+            <span class="step-label">Processing queue</span>
+            <h2 id="queueTitle">Your videos</h2>
           </div>
-          <span class="progress-number" id="progressNumber">0%</span>
+          <span class="queue-count" id="queueCount">0 videos</span>
         </div>
-
-        <div class="progress-track" aria-hidden="true"><span id="progressBar"></span></div>
-
-        <div class="processing-layout" id="processingLayout">
-          <div class="current-stage">
-            <div class="stage-orbit"><span></span><span></span><span></span></div>
-            <div>
-              <h3 id="currentStage">Starting local pipeline</h3>
-              <p id="stageHint">Keep this page open.</p>
-            </div>
-          </div>
-          <ol class="stage-list" id="stageList">
-            <li data-threshold="10"><span></span>Download</li>
-            <li data-threshold="30"><span></span>Transcribe</li>
-            <li data-threshold="56"><span></span>Scenes</li>
-            <li data-threshold="68"><span></span>Topics</li>
-            <li data-threshold="86"><span></span>Export</li>
-          </ol>
-        </div>
-
-        <div class="error-panel is-hidden" id="errorPanel">
-          <div class="error-icon">!</div>
-          <div><h3>Couldn’t finish</h3><p id="errorMessage"></p></div>
-          <button type="button" id="tryAgainButton">Try again</button>
-        </div>
-
-        <div class="results-panel is-hidden" id="resultsPanel">
-          <div class="results-intro">
-            <div class="success-mark">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9.2 16.2-4-4L3.8 13.6 9.2 19 20.5 7.7l-1.4-1.4-9.9 9.9Z"/></svg>
-            </div>
-            <div><h3>Clips ready</h3></div>
-          </div>
-          <div class="clip-grid" id="clipGrid"></div>
-        </div>
-
-        <details class="activity-log" id="activityLog">
-          <summary>Log</summary>
-          <ol id="eventList"></ol>
-        </details>
+        <div class="queue-notice is-hidden" id="queueNotice" role="status"></div>
+        <div class="queue-list" id="queueList"></div>
       </section>
     </main>
 
     <footer>
       <span>LocalCut <span id="footerVersion"></span></span>
-      <span>Runs locally</span>
+      <span>Runs locally · One video at a time</span>
     </footer>
   </body>
 </html>

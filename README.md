@@ -1,8 +1,8 @@
 # clipAuto
 
-Turn a multi-topic YouTube video into one vertical clip per topic. clipAuto downloads the video,
-transcribes it locally, detects topic changes, and exports ready-to-post 9:16 MP4 files—without a
-paid API or cloud AI service.
+Turn multi-topic YouTube videos into one vertical clip per topic. clipAuto queues the videos,
+processes them locally one at a time, and exports ready-to-post 9:16 MP4 files—without a paid API
+or cloud AI service.
 
 ![clipAuto local web interface](docs/images/clipauto.png)
 
@@ -39,16 +39,31 @@ If Ollama is not already running, start it in another terminal with `ollama serv
 .venv/bin/youtube-clipper --ui
 ```
 
-The browser opens at `http://127.0.0.1:8787`. Paste a YouTube URL, choose the playback speed and
-transcription quality, then select **Create clips**. Keep the terminal open while processing and
-stop the app with `Ctrl+C`.
+The browser opens at `http://127.0.0.1:8787`. Paste one YouTube URL or several URLs (one per line),
+choose the playback speed and transcription quality, then select **Add to queue**. Keep the
+terminal open while processing and stop the app with `Ctrl+C`.
 
-Generated files are stored as `output/part_01.mp4`, `output/part_02.mp4`, and so on. The download
-buttons in the interface also save copies through your browser.
+The queue shows `waiting`, `downloading`, `analyzing`, `clipping`, `completed`, or `failed` for
+each video. A failed video does not stop later items, and a waiting item can be removed before it
+starts. Repeated forms of the same YouTube link are skipped while that video is active.
+
+Generated files are isolated by video and use descriptive topic names:
+
+```text
+output/
+└── my-video-title-abc123/
+    └── clips/
+        ├── 01_introduction.mp4
+        └── 02_camera-setup.mp4
+```
+
+The title and YouTube ID keep similar video names separate. Folder and filenames are normalized
+for Linux and Windows. The download buttons in the interface also save copies through your
+browser.
 
 ## What clipAuto does
 
-- Downloads one YouTube video with `yt-dlp`.
+- Queues one or more YouTube videos and downloads them sequentially with `yt-dlp`.
 - Reads creator chapters and timestamps from the video description when available.
 - Transcribes speech locally with `faster-whisper`, including word timestamps.
 - Detects visual transitions with PySceneDetect.
@@ -59,7 +74,8 @@ buttons in the interface also save copies through your browser.
 - Supports playback speeds from 0.50x to 2.00x while preserving audio pitch.
 
 The default `small` Whisper model downloads about 466 MB on first use and is then cached locally.
-Completed transcript and scene analysis is also cached in `.clipper-work`, making retries faster.
+Completed transcript and scene analysis is cached under `.clipper-work/<youtube-id>/`, keeping
+sources, yt-dlp metadata, and analysis files separate while making retries faster.
 Automatic GPU mode falls back to optimized CPU processing if the required CUDA runtime is absent.
 
 ## Command-line usage
@@ -69,7 +85,11 @@ Run the pipeline without the graphical interface:
 ```bash
 .venv/bin/youtube-clipper "https://www.youtube.com/watch?v=VIDEO_ID"
 .venv/bin/youtube-clipper "https://www.youtube.com/watch?v=VIDEO_ID" --speed 1.5
+.venv/bin/youtube-clipper "https://youtu.be/FIRST_ID" "https://youtu.be/SECOND_ID"
 ```
+
+CLI URLs are processed in order. If one fails, the remaining URLs still run and the command exits
+with status `1` after the queue finishes.
 
 Useful controls:
 
@@ -114,8 +134,9 @@ the [architecture guide](docs/architecture.md), [changelog](CHANGELOG.md), and
 ```
 
 Tests cover marker recognition, multi-signal boundary fusion, model selection, Whisper runtime
-fallback, AV1 scene compatibility, FFmpeg export arguments, the UI server, and pipeline-stage
-orchestration. GitHub Actions runs tests on Python 3.10–3.13 plus lint and package builds.
+fallback, AV1 scene compatibility, FFmpeg export arguments, safe output naming, sequential queue
+and failure isolation, the UI server, and pipeline-stage orchestration. GitHub Actions runs tests
+on Python 3.10–3.13 plus lint and package builds.
 
 ## Donations
 

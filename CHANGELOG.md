@@ -5,7 +5,18 @@ Semantic Versioning.
 
 ## Unreleased
 
-No unreleased changes.
+### Added
+
+- Sequential multi-video queues in the web interface and CLI with per-item progress states,
+  duplicate prevention, waiting-item removal, and failure isolation.
+- Cross-platform-safe per-video work/output directories and descriptive numbered topic filenames.
+- Queue, naming, similar-title, invalid-input, removal, and mixed success/failure test coverage.
+
+### Changed
+
+- Generated clips now use `output/<safe-title>-<video-id>/clips/NN_topic-name.mp4` instead of a
+  shared `output/part_NN.mp4` namespace.
+- Result-card clip titles use smaller text above each preview.
 
 ## 0.1.0 - 2026-08-12
 

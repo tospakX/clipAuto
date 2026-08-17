@@ -108,7 +108,8 @@ def download_video(url: str, work_dir: Path) -> DownloadedVideo:
     # only portable filename characters and prevent equal video titles from sharing cache files.
     output_template = str(work_dir / "%(id)s" / "source.%(ext)s")
     command = [
-        "yt-dlp",
+        "yt-dlp", 
+        "--cookies-from-browser", "brave",
         "--no-playlist",
         "--format",
         "bestvideo*[vcodec^=avc1]+bestaudio/best[vcodec^=avc1]/bestvideo*+bestaudio/best",

@@ -60,6 +60,7 @@
               <textarea id="youtubeUrls" name="urls" rows="4" placeholder="https://youtube.com/watch?v=...&#10;https://youtu.be/..." required></textarea>
               <button class="paste-button" id="pasteButton" type="button">Paste</button>
             </div>
+            <div class="url-count" id="urlCount">0 URLs</div>
             <p class="field-error" id="urlError" role="alert"></p>
 
             <div class="settings-grid">
@@ -116,5 +117,8 @@
       <span>LocalCut <span id="footerVersion"></span></span>
       <span>Runs locally · One video at a time</span>
     </footer>
-  </body>
+  <div class="history-controls">
+    <button id="downloadAllBtn" class="btn">Download All Clips</button>
+    <button id="deleteHistoryBtn" class="btn">Delete History</button>
+</div></body>
 </html>

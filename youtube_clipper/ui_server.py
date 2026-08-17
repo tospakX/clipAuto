@@ -332,10 +332,10 @@ class UIRequestHandler(BaseHTTPRequestHandler):
                 raw_urls = [payload["url"]]
             if (
                 not isinstance(raw_urls, list)
-                or not 1 <= len(raw_urls) <= 100
+                or not 1 <= len(raw_urls)
                 or any(not isinstance(value, str) for value in raw_urls)
             ):
-                raise ValueError("urls must be a list of 1 to 100 YouTube links")
+                raise ValueError("urls must be a list of 1 or more YouTube links")
             submission = self.server.manager.enqueue(
                 raw_urls,
                 float(payload.get("speed", 1.0)),
@@ -462,18 +462,20 @@ class UIRequestHandler(BaseHTTPRequestHandler):
         content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
         self._send_bytes(HTTPStatus.OK, resource.read_bytes(), content_type)
 
+
     def _read_json(self) -> dict[str, object]:
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError as exc:
             raise ValueError("Invalid request length") from exc
-        if length <= 0 or length > 32_768:
+        if length <= 0:
             raise ValueError("Invalid request body")
+        if length > 2_000_000:
+            raise ValueError("Request body too large")
         payload = json.loads(self.rfile.read(length))
         if not isinstance(payload, dict):
             raise ValueError("Request must be a JSON object")
         return payload
-
     def _json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
         data = json.dumps(payload).encode()
         self._send_bytes(status, data, "application/json; charset=utf-8")

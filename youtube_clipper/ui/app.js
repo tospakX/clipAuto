@@ -9,6 +9,7 @@ const $ = (selector) => document.querySelector(selector);
 const ACTIVE_STATUSES = new Set(["waiting", "downloading", "analyzing", "clipping"]);
 
 const elements = {
+  urlCount: $('#urlCount'),
   form: $("#clipForm"),
   urls: $("#youtubeUrls"),
   urlField: $("#urlField"),
@@ -97,6 +98,13 @@ function youtubeVideoId(value) {
     return null;
   }
   return null;
+}
+
+function updateUrlCount() {
+  const value = elements.urls.value;
+  const parsed = parseUrls(value);
+  const count = parsed.urls.length;
+  elements.urlCount.textContent = `${count} URL${count === 1 ? '' : 's'}`;
 }
 
 function parseUrls(value) {
@@ -330,11 +338,15 @@ $("#pasteButton").addEventListener("click", async () => {
     setUrlError();
   } catch {
     // Clipboard access can be denied; focusing still makes manual paste immediate.
+  updateUrlCount();
   }
   elements.urls.focus();
 });
 
-elements.urls.addEventListener("input", () => setUrlError());
+elements.urls.addEventListener("input", () => {
+  setUrlError();
+  updateUrlCount();
+});
 elements.form.addEventListener("submit", addToQueue);
 elements.healthPill.addEventListener("click", checkHealth);
 elements.queueList.addEventListener("click", (event) => {

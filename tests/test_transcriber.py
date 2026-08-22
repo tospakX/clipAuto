@@ -1,78 +1,96 @@
-import tempfile
-import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
 
-from youtube_clipper.transcriber import (
-    _collect_segments,
-    _complete_model_path,
-    _load_cuda_library,
-    resolve_runtime,
-)
+import pytest
+
+from clipauto.process import ProcessCancelled
+from clipauto.transcriber import TranscriptionError, WhisperTranscriber
 
 
-class RuntimeSelectionTests(unittest.TestCase):
-    def test_cuda_library_can_be_loaded_from_ollama_directory(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            library = Path(tmp) / "libcublas.so.12"
-            library.touch()
-            with (
-                patch(
-                    "youtube_clipper.transcriber._cuda_library_directories",
-                    return_value=(Path(tmp),),
-                ),
-                patch("youtube_clipper.transcriber.ctypes.CDLL") as load,
-            ):
-                load.side_effect = [OSError("not on system path"), object()]
-                self.assertTrue(_load_cuda_library("libcublas.so.12"))
-                self.assertEqual(load.call_args.args[0], str(library))
+def test_falls_back_from_cuda_to_cpu_and_keeps_timestamps(tmp_path: Path):
+    calls = []
 
-    def test_auto_falls_back_to_cpu_when_cuda_runtime_is_incomplete(self):
-        fake_ctranslate = SimpleNamespace(get_cuda_device_count=lambda: 1)
-        with (
-            patch.dict("sys.modules", {"ctranslate2": fake_ctranslate}),
-            patch(
-                "youtube_clipper.transcriber._cuda_libraries_available",
-                return_value=(False, "libcublas.so.12"),
-            ),
-        ):
-            device, compute, warning = resolve_runtime("auto", "default")
-        self.assertEqual((device, compute), ("cpu", "int8"))
-        self.assertIn("libcublas.so.12", warning)
+    class FakeModel:
+        def transcribe(self, path, **options):
+            assert options["word_timestamps"] is True
+            assert options["beam_size"] == 1
+            assert options["vad_filter"] is True
+            word = SimpleNamespace(start=1.0, end=1.5, word=" hello")
+            segment = SimpleNamespace(start=1.0, end=3.0, text=" Hello world.", words=[word])
+            return iter([segment]), SimpleNamespace(duration=4.0, language="en")
 
-    def test_auto_uses_cuda_only_when_device_and_libraries_are_ready(self):
-        fake_ctranslate = SimpleNamespace(get_cuda_device_count=lambda: 1)
-        with (
-            patch.dict("sys.modules", {"ctranslate2": fake_ctranslate}),
-            patch(
-                "youtube_clipper.transcriber._cuda_libraries_available", return_value=(True, None)
-            ),
-        ):
-            runtime = resolve_runtime("auto", "default")
-        self.assertEqual(runtime, ("cuda", "float16", None))
+    def factory(name, device, compute_type):
+        calls.append((name, device, compute_type))
+        if device == "cuda":
+            raise RuntimeError("CUDA unavailable")
+        return FakeModel()
+
+    progress = []
+    result = WhisperTranscriber("small", model_factory=factory).transcribe(
+        tmp_path / "source.mp4", progress.append
+    )
+
+    assert calls == [("small", "cuda", "float16"), ("small", "cpu", "int8")]
+    assert result.device == "cpu"
+    assert result.language == "en"
+    assert result.duration == 4.0
+    assert result.segments[0].text == "Hello world."
+    assert result.segments[0].words[0].text == "hello"
+    assert progress[-1] == 0.75
 
 
-class ModelAndProgressTests(unittest.TestCase):
-    def test_local_model_directory_must_contain_model_bin(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            model_dir = Path(tmp)
-            self.assertIsNone(_complete_model_path(str(model_dir)))
-            (model_dir / "model.bin").write_bytes(b"weights")
-            self.assertEqual(_complete_model_path(str(model_dir)), model_dir)
+def test_cancellation_during_cuda_transcription_does_not_retry_on_cpu(tmp_path: Path):
+    calls = []
 
-    def test_transcription_progress_uses_video_timestamp(self):
-        updates = []
-        segments = [
-            SimpleNamespace(start=0.0, end=25.0, text=" First ", words=[]),
-            SimpleNamespace(start=25.0, end=75.0, text=" Second ", words=[]),
-        ]
-        result = _collect_segments(
-            iter(segments), 100.0, lambda value, text: updates.append((value, text))
+    class CancelledModel:
+        def transcribe(self, path, **options):
+            raise ProcessCancelled("cancelled")
+
+    def factory(name, device, compute_type):
+        calls.append(device)
+        return CancelledModel()
+
+    with pytest.raises(ProcessCancelled, match="cancelled"):
+        WhisperTranscriber("small", model_factory=factory).transcribe(
+            tmp_path / "source.mp4", lambda _: None
         )
-        self.assertEqual(len(result), 2)
-        self.assertTrue(any("75% of video processed" in text for _value, text in updates))
+
+    assert calls == ["cuda"]
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_no_speech_result_does_not_repeat_full_transcription_on_cpu(tmp_path: Path):
+    calls = []
+
+    class SilentModel:
+        def transcribe(self, path, **options):
+            return iter([]), SimpleNamespace(duration=30.0, language="en")
+
+    def factory(name, device, compute_type):
+        calls.append(device)
+        return SilentModel()
+
+    with pytest.raises(TranscriptionError, match="did not detect any spoken transcript"):
+        WhisperTranscriber("small", model_factory=factory).transcribe(
+            tmp_path / "silent.mp4", lambda _: None
+        )
+
+    assert calls == ["cuda"]
+
+
+def test_reuses_loaded_model_for_sequential_videos(tmp_path: Path):
+    factory_calls = []
+
+    class FakeModel:
+        def transcribe(self, path, **options):
+            segment = SimpleNamespace(start=0.0, end=1.0, text=" Speech.", words=[])
+            return iter([segment]), SimpleNamespace(duration=1.0, language="en")
+
+    def factory(name, device, compute_type):
+        factory_calls.append((device, compute_type))
+        return FakeModel()
+
+    transcriber = WhisperTranscriber("small", model_factory=factory)
+    transcriber.transcribe(tmp_path / "first.mp4", lambda _: None)
+    transcriber.transcribe(tmp_path / "second.mp4", lambda _: None)
+
+    assert factory_calls == [("cuda", "float16")]

@@ -1,88 +1,61 @@
-import json
-import tempfile
-import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
 
-from youtube_clipper.downloader import (
-    download_video,
-    parse_description_timestamps,
-    timestamps_from_metadata,
+from clipauto.downloader import (
+    build_download_command,
+    needs_brave_fallback,
+    parse_chapters,
+    parse_progress,
 )
 
 
-class DescriptionTimestampTests(unittest.TestCase):
-    def test_parses_common_timestamp_formats_and_ignores_unrelated_text(self):
-        description = """Chapters
-0:00 Intro
-- 01:25 First topic
-Long topic — 1:02:03
-https://example.com/watch?t=90
-Order 1234 today
-"""
-        timestamps = parse_description_timestamps(description)
-        self.assertEqual(
-            [(item.timestamp, item.title) for item in timestamps],
-            [(0.0, "Intro"), (85.0, "First topic"), (3723.0, "Long topic")],
-        )
-        self.assertTrue(all(item.confidence > 0.8 for item in timestamps))
-
-    def test_lone_description_time_has_lower_confidence(self):
-        timestamps = parse_description_timestamps("Jump ahead 5:30")
-        self.assertEqual(len(timestamps), 1)
-        self.assertLess(timestamps[0].confidence, 0.65)
-
-    def test_structured_chapter_wins_when_description_time_is_duplicated(self):
-        timestamps = timestamps_from_metadata(
-            {
-                "description": "0:00 Intro\n1:00 Description label",
-                "chapters": [{"start_time": 60, "title": "Official chapter"}],
-            }
-        )
-        self.assertEqual(len(timestamps), 2)
-        self.assertEqual(timestamps[1].title, "Official chapter")
-        self.assertEqual(timestamps[1].confidence, 0.95)
+def test_parses_ytdlp_machine_progress():
+    assert parse_progress("download:37.4%") == 0.374
+    assert parse_progress("download:NA%") is None
 
 
-class DownloaderTests(unittest.TestCase):
-    @patch("youtube_clipper.downloader.subprocess.run")
-    def test_uses_video_id_workspace_and_returns_video_identity(self, run):
-        with tempfile.TemporaryDirectory() as tmp:
-            output = Path(tmp) / "abc123" / "source.mp4"
-            output.parent.mkdir()
-            output.write_bytes(b"video")
-            output.with_suffix(".info.json").write_text(
-                json.dumps(
-                    {
-                        "id": "abc123",
-                        "title": "A useful video",
-                        "description": "0:00 Intro\n1:30 Topic two",
-                    }
-                ),
-                encoding="utf-8",
-            )
-            run.return_value = Mock(returncode=0, stdout=f"{output}\n", stderr="")
-            result = download_video("https://youtu.be/abc123", Path(tmp))
-
-        self.assertEqual(result.path, output)
-        self.assertEqual(result.video_id, "abc123")
-        self.assertEqual(result.title, "A useful video")
-        self.assertEqual([item.timestamp for item in result.timestamps], [0.0, 90.0])
-        command = run.call_args.args[0]
-        self.assertIn("%(id)s/source.%(ext)s", " ".join(command))
-        self.assertIn("--write-info-json", command)
-
-    @patch("youtube_clipper.downloader.subprocess.run")
-    def test_reports_yt_dlp_error(self, run):
-        run.return_value = Mock(returncode=1, stdout="", stderr="ERROR: unavailable video\n")
-        with (
-            tempfile.TemporaryDirectory() as tmp,
-            self.assertRaisesRegex(
-                RuntimeError, "yt-dlp download failed: ERROR: unavailable video"
-            ),
-        ):
-            download_video("https://youtu.be/example", Path(tmp))
+def test_brave_fallback_is_limited_to_access_failures():
+    assert needs_brave_fallback("ERROR: HTTP Error 403: Forbidden")
+    assert needs_brave_fallback("Sign in to confirm your age")
+    assert needs_brave_fallback("Sign in to confirm you’re not a bot")
+    assert not needs_brave_fallback("ERROR: Unsupported URL")
+    assert not needs_brave_fallback("No space left on device")
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_download_command_uses_native_brave_cookie_option(tmp_path: Path):
+    command = build_download_command("https://youtu.be/a;touch-pwn", tmp_path, use_brave=True)
+
+    assert command[0] == "yt-dlp"
+    assert command[-1] == "https://youtu.be/a;touch-pwn"
+    assert command[command.index("--cookies-from-browser") + 1] == "brave"
+    assert "--newline" in command
+
+
+def test_download_command_requests_ytdlp_parsed_description_chapters(tmp_path: Path):
+    command = build_download_command("https://youtu.be/video", tmp_path)
+
+    assert "after_move:clipauto_chapters:%(chapters)j" in command
+
+
+def test_download_command_does_not_fetch_resolution_above_output_size(tmp_path: Path):
+    command = build_download_command("https://youtu.be/video", tmp_path)
+
+    assert command[command.index("--format") + 1] == "bv*[height<=1080]+ba/b[height<=1080]"
+    assert command[command.index("--concurrent-fragments") + 1] == "4"
+
+
+def test_parses_ytdlp_chapter_json_without_interpreting_description_text():
+    raw = (
+        '[{"start_time":0,"end_time":42.5,"title":"Coffee"},'
+        '{"start_time":42.5,"end_time":90,"title":"Sleep"}]'
+    )
+
+    assert parse_chapters(raw) == [
+        {"start_time": 0, "end_time": 42.5, "title": "Coffee"},
+        {"start_time": 42.5, "end_time": 90, "title": "Sleep"},
+    ]
+
+
+def test_invalid_or_missing_ytdlp_chapters_become_empty_metadata():
+    assert parse_chapters("null") == []
+    assert parse_chapters("not-json") == []
+    assert parse_chapters('{"title":"not a list"}') == []

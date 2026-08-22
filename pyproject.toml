@@ -1,51 +1,48 @@
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
-
 [project]
-name = "local-youtube-clipper"
-dynamic = ["version"]
-description = "Turn a multi-topic YouTube video into local short-form clips."
+name = "clipauto"
+version = "0.1.0"
+description = "Local topic-based YouTube clip maker"
 readme = "README.md"
-requires-python = ">=3.10,<3.14"
-keywords = ["youtube", "video", "shorts", "tiktok", "reels", "whisper", "ollama"]
-classifiers = [
-  "Development Status :: 3 - Alpha",
-  "Environment :: Console",
-  "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.10",
-  "Programming Language :: Python :: 3.11",
-  "Programming Language :: Python :: 3.12",
-  "Programming Language :: Python :: 3.13",
-  "Topic :: Multimedia :: Video :: Conversion",
-]
+requires-python = ">=3.12,<3.13"
 dependencies = [
-  "faster-whisper>=1.1,<2",
-  "scenedetect[opencv]>=0.6.4,<0.7",
-  "yt-dlp>=2025.1",
-]
-
-[project.optional-dependencies]
-dev = [
-  "build>=1,<2",
-  "ruff>=0.12,<1",
+  "fastapi>=0.116,<1",
+  "faster-whisper>=1.2,<2",
+  "httpx>=0.28,<1",
+  "pydantic>=2.11,<3",
+  "pydantic-settings>=2.10,<3",
+  "python-multipart>=0.0.20,<1",
+  "uvicorn[standard]>=0.35,<1",
 ]
 
 [project.scripts]
-youtube-clipper = "youtube_clipper.cli:main"
+clipauto = "clipauto.__main__:main"
+clipauto-regroup = "clipauto.regroup:main"
 
-[tool.setuptools.packages.find]
-include = ["youtube_clipper*"]
+[dependency-groups]
+dev = [
+  "playwright>=1.54,<2",
+  "pytest>=8.4,<9",
+  "pytest-asyncio>=1.1,<2",
+  "ruff>=0.12,<1",
+]
 
-[tool.setuptools.dynamic]
-version = {attr = "youtube_clipper.__version__"}
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-[tool.setuptools.package-data]
-"youtube_clipper.ui" = ["*.html", "*.css", "*.js"]
+[tool.hatch.build.targets.wheel]
+packages = ["clipauto"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = [
+  "ignore:Using `httpx` with `starlette.testclient` is deprecated:starlette.exceptions.StarletteDeprecationWarning",
+]
 
 [tool.ruff]
-target-version = "py310"
 line-length = 100
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

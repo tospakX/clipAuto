@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#202b43">
+  <title>ClipAuto — one clip per topic</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="masthead">
+    <a class="brand" href="/">ClipAuto</a>
+    <p class="local-badge"><span aria-hidden="true"></span> Local</p>
+  </header>
+
+  <main>
+    <section class="intake" aria-labelledby="page-title">
+      <div class="section-heading">
+        <div>
+          <h1 id="page-title">Create topic clips</h1>
+          <p>Paste YouTube links. Description chapters are used first; Ollama fills in the rest.</p>
+        </div>
+        <p id="url-count" class="timecode">0 / 200</p>
+      </div>
+      <form id="batch-form" novalidate>
+        <label class="sr-only" for="urls">YouTube URLs, one per line</label>
+        <textarea id="urls" name="urls" rows="4" spellcheck="false" placeholder="Paste one or more YouTube URLs…" required></textarea>
+        <div class="form-footer">
+          <p>Up to 200 links · one per line</p>
+          <button id="create-batch" class="primary-action" type="submit">
+            <span>Create clips</span><span aria-hidden="true">→</span>
+          </button>
+        </div>
+        <p id="form-error" class="form-error" role="alert" hidden></p>
+      </form>
+    </section>
+
+    <section id="workspace" class="workspace" aria-labelledby="queue-title" hidden>
+      <div class="section-heading queue-heading">
+        <div>
+          <h2 id="queue-title">Queue</h2>
+          <div id="batch-summary" class="batch-summary timecode"></div>
+        </div>
+        <div class="queue-controls">
+          <div class="queue-actions">
+            <button id="clear-history" class="clear-history" type="button">Clear history</button>
+            <button id="export-all" class="export-all" type="button" hidden>Export MP4s <span aria-hidden="true">↗</span></button>
+            <a id="download-all" class="download-all" href="#" hidden>Download ZIP <span aria-hidden="true">↓</span></a>
+          </div>
+          <p id="export-status" class="export-status" role="status" hidden></p>
+        </div>
+      </div>
+      <div id="queue" class="queue" aria-live="polite" aria-busy="false"></div>
+    </section>
+  </main>
+
+  <template id="job-template">
+    <article class="job">
+      <div class="playhead" aria-hidden="true"><span></span></div>
+      <div class="job-body">
+        <div class="job-heading">
+          <div>
+            <p class="job-index timecode"></p>
+            <h3 class="job-title"></h3>
+          </div>
+          <div class="job-actions">
+            <button class="copy-button" type="button">Copy link</button>
+            <button class="retry-button" type="button" hidden>Retry</button>
+            <button class="cancel-button" type="button">Cancel</button>
+            <button class="remove-button" type="button" hidden>Delete video</button>
+          </div>
+        </div>
+        <p class="job-url"></p>
+        <div class="progress-row">
+          <p class="stage-label"></p>
+          <p class="progress-value timecode"></p>
+        </div>
+        <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100"><span></span></div>
+        <p class="job-error" role="alert" hidden></p>
+        <p class="job-notice" role="status" hidden></p>
+        <button class="clips-toggle" type="button" aria-expanded="false" hidden></button>
+        <div class="clips"></div>
+      </div>
+    </article>
+  </template>
+</body>
+</html>

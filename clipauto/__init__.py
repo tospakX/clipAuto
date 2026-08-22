@@ -1,0 +1,1 @@
+"""ClipAuto application package."""

@@ -1,4 +1,0 @@
-include CHANGELOG.md
-include CONTRIBUTING.md
-include SECURITY.md
-recursive-include docs *.md *.png

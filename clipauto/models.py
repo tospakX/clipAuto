@@ -56,11 +56,15 @@ class JobRecord:
     created_at: str = ""
     updated_at: str = ""
     clips: list[ClipRecord] = field(default_factory=list)
+    clip_count: int = 0
 
-    def to_dict(self) -> dict:
+    def to_dict(self, *, include_clips: bool = True) -> dict:
         result = asdict(self)
         result["status"] = self.status.value
         result["stage"] = self.stage.value
+        result["clip_count"] = self.clip_count or len(self.clips)
+        if not include_clips:
+            result.pop("clips")
         return result
 
 
@@ -70,11 +74,11 @@ class BatchRecord:
     created_at: str
     jobs: list[JobRecord] = field(default_factory=list)
 
-    def to_dict(self) -> dict:
+    def to_dict(self, *, include_clips: bool = True) -> dict:
         return {
             "id": self.id,
             "created_at": self.created_at,
-            "jobs": [j.to_dict() for j in self.jobs],
+            "jobs": [j.to_dict(include_clips=include_clips) for j in self.jobs],
         }
 
 

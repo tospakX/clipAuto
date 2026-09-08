@@ -20,6 +20,7 @@ clipauto-regroup = "clipauto.regroup:main"
 
 [dependency-groups]
 dev = [
+  "httpx2>=2,<3",
   "playwright>=1.54,<2",
   "pytest>=8.4,<9",
   "pytest-asyncio>=1.1,<2",

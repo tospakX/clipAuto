@@ -10,16 +10,19 @@
 </head>
 <body>
   <header class="masthead">
-    <a class="brand" href="/">ClipAuto</a>
-    <p class="local-badge"><span aria-hidden="true"></span> Local</p>
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>ClipAuto</a>
+    <p id="connection-status" class="connection-status" role="status" data-state="connecting">
+      <span aria-hidden="true"></span><b>Connecting</b> · local workspace
+    </p>
   </header>
 
   <main>
     <section class="intake" aria-labelledby="page-title">
       <div class="section-heading">
         <div>
-          <h1 id="page-title">Create topic clips</h1>
-          <p>Paste YouTube links. Description chapters are used first; Ollama fills in the rest.</p>
+          <p class="eyebrow">YouTube → vertical reels</p>
+          <h1 id="page-title">Turn every topic into a finished clip.</h1>
+          <p>Paste a batch. ClipAuto finds the topic boundaries, captions each reel, and keeps the queue moving locally.</p>
         </div>
         <p id="url-count" class="timecode">0 / 200</p>
       </div>
@@ -27,7 +30,7 @@
         <label class="sr-only" for="urls">YouTube URLs, one per line</label>
         <textarea id="urls" name="urls" rows="4" spellcheck="false" placeholder="Paste one or more YouTube URLs…" required></textarea>
         <div class="form-footer">
-          <p>Up to 200 links · one per line</p>
+        <p>Up to 200 links · whitespace or commas work too</p>
           <button id="create-batch" class="primary-action" type="submit">
             <span>Create clips</span><span aria-hidden="true">→</span>
           </button>
@@ -39,7 +42,8 @@
     <section id="workspace" class="workspace" aria-labelledby="queue-title" hidden>
       <div class="section-heading queue-heading">
         <div>
-          <h2 id="queue-title">Queue</h2>
+          <p class="eyebrow">Workspace</p>
+          <h2 id="queue-title">Production queue</h2>
           <div id="batch-summary" class="batch-summary timecode"></div>
         </div>
         <div class="queue-controls">
@@ -51,7 +55,32 @@
           <p id="export-status" class="export-status" role="status" hidden></p>
         </div>
       </div>
+      <nav class="queue-filters" aria-label="Filter production queue">
+        <button class="filter-button" data-filter="all" type="button" aria-pressed="true">
+          <span>All</span><b id="count-all">0</b>
+        </button>
+        <button class="filter-button" data-filter="active" type="button" aria-pressed="false">
+          <span>Active</span><b id="count-active">0</b>
+        </button>
+        <button class="filter-button" data-filter="completed" type="button" aria-pressed="false">
+          <span>Finished</span><b id="count-completed">0</b>
+        </button>
+        <button class="filter-button" data-filter="failed" type="button" aria-pressed="false">
+          <span>Needs attention</span><b id="count-failed">0</b>
+        </button>
+      </nav>
+      <div class="queue-toolbar">
+        <label class="search-field" for="queue-search">
+          <span class="sr-only">Search videos</span>
+          <span aria-hidden="true">⌕</span>
+          <input id="queue-search" type="search" autocomplete="off" placeholder="Search title, URL, or video number">
+        </label>
+        <p id="visible-count" class="visible-count timecode"></p>
+      </div>
       <div id="queue" class="queue" aria-live="polite" aria-busy="false"></div>
+      <div class="queue-footer">
+        <button id="load-more" type="button" hidden>Show 30 more</button>
+      </div>
     </section>
   </main>
 
@@ -77,7 +106,10 @@
           <p class="progress-value timecode"></p>
         </div>
         <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100"><span></span></div>
-        <p class="job-error" role="alert" hidden></p>
+        <details class="error-details" hidden>
+          <summary><span class="error-summary"></span><b>Details</b></summary>
+          <pre class="job-error"></pre>
+        </details>
         <p class="job-notice" role="status" hidden></p>
         <button class="clips-toggle" type="button" aria-expanded="false" hidden></button>
         <div class="clips"></div>

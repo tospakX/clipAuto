@@ -17,9 +17,16 @@ with sync_playwright() as playwright:
     page.locator("#batch-form").wait_for()
     page.locator("#workspace:not([hidden])").wait_for()
     page.get_by_role("link", name="Download ZIP").wait_for()
+    page.locator('#connection-status[data-state="live"]').wait_for()
+    assert page.locator(".filter-button").count() == 4
+    assert page.locator(".job").count() <= 30
     assert page.locator("video").count() == 0
     first_job = page.locator(".job").first
-    first_job.get_by_role("button", name="Show 1 clip").click()
+    lazy_clips = lambda response: (  # noqa: E731 - Playwright expects a predicate
+        "/api/jobs/" in response.url and response.url.endswith("/clips")
+    )
+    with page.expect_response(lazy_clips):
+        first_job.get_by_role("button", name="Show 1 clip").click()
     first_job.get_by_role("button", name="Hide 1 clip").wait_for()
     assert first_job.locator("video").count() == 1
     assert page.locator("video").count() == 1
@@ -63,7 +70,7 @@ with sync_playwright() as playwright:
 if errors:
     raise AssertionError(f"Browser console errors: {errors}")
 print(
-    "browser-smoke: lazy preview, export, single-video deletion, desktop, mobile, and "
-    "clear-history states passed without console errors"
+    "browser-smoke: compact queue, filters, lazy preview, export, single-video deletion, "
+    "desktop, mobile, and clear-history states passed without console errors"
 )
 print(Path("/tmp/clipauto-desktop.png"), Path("/tmp/clipauto-mobile.png"))

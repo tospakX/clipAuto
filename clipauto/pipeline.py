@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import shutil
 import uuid
 from collections.abc import Awaitable, Callable
@@ -18,8 +19,12 @@ from clipauto.topics import (
     normalize_topics,
     plan_reel_topics,
     topics_from_chapters,
+    topics_from_transcript,
 )
+from clipauto.transcript_cache import load_transcript, save_transcript
 from clipauto.validation import validate_reel
+
+logger = logging.getLogger(__name__)
 
 
 class Pipeline:
@@ -109,8 +114,23 @@ class Pipeline:
             stage = Stage.TRANSCRIBING
             self.store.update_job(job_id, stage=stage, progress=0)
             transcription = await asyncio.to_thread(
-                self.transcriber.transcribe, downloaded.path, update_progress
+                load_transcript, work_dir / "transcript.json", downloaded.path
             )
+            if transcription is None:
+                transcription = await asyncio.to_thread(
+                    self.transcriber.transcribe, downloaded.path, update_progress
+                )
+                try:
+                    await asyncio.to_thread(
+                        save_transcript,
+                        work_dir / "transcript.json",
+                        downloaded.path,
+                        transcription,
+                    )
+                except OSError as error:
+                    logger.warning("Could not cache transcript for job %s: %s", job_id, error)
+            else:
+                update_progress(1)
             if cancel_event.is_set():
                 raise ProcessCancelled("Processing was cancelled")
 
@@ -120,12 +140,27 @@ class Pipeline:
                 downloaded.chapters, downloaded.duration or transcription.duration
             )
             if topics is None:
-                response = await self.segmenter.segment(
-                    format_timestamped_transcript(transcription.segments), transcription.duration
-                )
-                topics = normalize_topics(
-                    extract_json_array(response), transcription.segments, transcription.duration
-                )
+                try:
+                    response = await self.segmenter.segment(
+                        format_timestamped_transcript(transcription.segments),
+                        transcription.duration,
+                    )
+                    topics = normalize_topics(
+                        extract_json_array(response),
+                        transcription.segments,
+                        transcription.duration,
+                    )
+                except ProcessCancelled:
+                    raise
+                except Exception as error:
+                    logger.warning(
+                        "Topic model result was unusable for job %s; using transcript fallback: %s",
+                        job_id,
+                        error,
+                    )
+                    topics = topics_from_transcript(
+                        transcription.segments, transcription.duration
+                    )
             topics = plan_reel_topics(topics, transcription.segments)
             self.store.update_job(job_id, progress=1, planned_clips=len(topics))
 

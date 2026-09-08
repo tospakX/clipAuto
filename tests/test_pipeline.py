@@ -4,6 +4,7 @@ import pytest
 
 from clipauto.downloader import DownloadResult
 from clipauto.models import ClipRecord, JobStatus, Stage, Topic, TranscriptSegment
+from clipauto.ollama import OllamaError
 from clipauto.pipeline import Pipeline
 from clipauto.store import JobStore
 from clipauto.transcriber import TranscriptionResult
@@ -11,6 +12,61 @@ from clipauto.transcriber import TranscriptionResult
 
 def _accept_test_render(*_args):
     return None
+
+
+@pytest.mark.asyncio
+async def test_pipeline_falls_back_to_transcript_topics_when_ollama_fails(tmp_path: Path):
+    store = JobStore(tmp_path / "jobs.db")
+    job = store.create_batch(["https://youtu.be/fallback"]).jobs[0]
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+
+    async def downloader(url, work_dir, progress, cancel_event):
+        return DownloadResult(source, "Fallback talk", 110, False)
+
+    class Transcriber:
+        def transcribe(self, path, progress):
+            return TranscriptionResult(
+                [
+                    TranscriptSegment(0, 55, "First useful subject."),
+                    TranscriptSegment(55, 110, "Second useful subject."),
+                ],
+                110,
+                "en",
+                "cpu",
+            )
+
+    class Segmenter:
+        async def segment(self, transcript, duration):
+            raise OllamaError("model unavailable")
+
+    captured = []
+
+    async def renderer(source, output_dir, topics, segments, progress, cancel_event):
+        captured.extend(topics)
+        output_dir.mkdir(parents=True)
+        outputs = []
+        for index in range(len(topics)):
+            output = output_dir / f"clip_{index + 1:02d}.mp4"
+            output.write_bytes(b"clip")
+            outputs.append(output)
+        return outputs
+
+    await Pipeline(
+        store,
+        tmp_path / "data",
+        Transcriber(),
+        Segmenter(),
+        downloader=downloader,
+        renderer=renderer,
+        validator=_accept_test_render,
+    ).process(job.id)
+
+    assert captured == [
+        Topic("First useful subject", 0, 55),
+        Topic("Second useful subject", 55, 110),
+    ]
+    assert store.get_job(job.id).status is JobStatus.COMPLETED
 
 
 @pytest.mark.asyncio

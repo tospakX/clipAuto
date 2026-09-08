@@ -71,22 +71,33 @@ def _is_trailing_junk(topic: Topic, maximum_descriptive_duration: float) -> bool
 
 def extract_json_array(text: str) -> list[dict[str, Any]]:
     fenced = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", text, re.DOTALL | re.IGNORECASE)
-    candidate = fenced.group(1) if fenced else text[text.find("[") : text.rfind("]") + 1]
-    if not candidate or not candidate.startswith("["):
-        raise TopicValidationError("Ollama output did not contain a JSON array")
-    try:
-        value = json.loads(candidate)
-    except json.JSONDecodeError as error:
-        raise TopicValidationError(f"Ollama returned malformed JSON: {error.msg}") from error
-    if not isinstance(value, list):
-        raise TopicValidationError("Ollama output must be a JSON array")
-    return value
+    candidates = (
+        [fenced.group(1)]
+        if fenced
+        else [text[index:] for index, char in enumerate(text) if char in "[{"]
+    )
+    decoder = json.JSONDecoder()
+    for candidate in candidates:
+        try:
+            value, _ = decoder.raw_decode(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            for key in ("topics", "segments", "clips"):
+                nested = value.get(key)
+                if isinstance(nested, list):
+                    return nested
+            if {"title", "start", "end"}.issubset(value):
+                return [value]
+    raise TopicValidationError("Ollama output did not contain a valid JSON array of topics")
 
 
 def normalize_topics(
     raw: list[dict[str, Any]], segments: list[TranscriptSegment], duration: float
 ) -> list[Topic]:
-    if not raw or duration <= 0:
+    if not raw or not math.isfinite(duration) or duration <= 0:
         raise TopicValidationError("At least one topic and a positive duration are required")
     parsed: list[Topic] = []
     for item in raw:
@@ -94,14 +105,26 @@ def normalize_topics(
             title = str(item["title"]).strip()
             start = float(item["start"])
             end = float(item["end"])
-        except (KeyError, TypeError, ValueError) as error:
-            raise TopicValidationError("Every topic needs a title and numeric start/end") from error
-        if not title or start < 0 or end <= start:
-            raise TopicValidationError(
-                "Topic titles must be non-empty and ranges must move forward"
-            )
-        parsed.append(Topic(title, min(start, duration), min(end, duration)))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if (
+            not title
+            or not math.isfinite(start)
+            or not math.isfinite(end)
+            or start < 0
+            or start >= duration
+            or end <= start
+        ):
+            continue
+        parsed.append(Topic(title, start, min(end, duration)))
     parsed.sort(key=lambda topic: topic.start)
+    parsed = [
+        topic
+        for index, topic in enumerate(parsed)
+        if index == 0 or not math.isclose(topic.start, parsed[index - 1].start, abs_tol=0.01)
+    ]
+    if not parsed:
+        raise TopicValidationError("Ollama returned no usable topic ranges")
     if len(parsed) == 1:
         return [Topic(parsed[0].title, 0.0, duration)]
 
@@ -109,17 +132,16 @@ def normalize_topics(
         {segment.start for segment in segments if 0 < segment.start < duration}
     )
     boundaries = [0.0]
-    for previous, current in zip(parsed, parsed[1:], strict=False):
+    for index, (previous, current) in enumerate(zip(parsed, parsed[1:], strict=False)):
         proposed = (previous.end + current.start) / 2
-        boundary = (
-            min(sentence_boundaries, key=lambda value: abs(value - proposed))
-            if sentence_boundaries
-            else proposed
-        )
-        if boundary <= boundaries[-1] or boundary >= duration:
-            raise TopicValidationError(
-                "Topic ranges cannot be normalized into increasing boundaries"
-            )
+        available = [value for value in sentence_boundaries if boundaries[-1] < value < duration]
+        remaining = len(parsed) - index - 2
+        if available:
+            reservable = available[: len(available) - remaining] if remaining else available
+            boundary = min(reservable, key=lambda value: abs(value - proposed))
+        else:
+            room = max(0.001, (duration - boundaries[-1]) / (remaining + 2))
+            boundary = min(duration - room * (remaining + 1), max(boundaries[-1] + room, proposed))
         boundaries.append(boundary)
     boundaries.append(duration)
     return [
@@ -132,6 +154,47 @@ def format_timestamped_transcript(segments: list[TranscriptSegment]) -> str:
     return "\n".join(
         f"[{segment.start:.2f}-{segment.end:.2f}] {segment.text.strip()}" for segment in segments
     )
+
+
+def topics_from_transcript(
+    segments: list[TranscriptSegment], duration: float
+) -> list[Topic]:
+    if not segments or not math.isfinite(duration) or duration <= 0:
+        raise TopicValidationError("A transcript and positive duration are required for fallback")
+
+    part_count = max(1, math.ceil(duration / 66.0))
+    candidates = sorted(
+        {
+            value
+            for segment in segments
+            for value in (segment.start, segment.end)
+            if math.isfinite(value) and 0 < value < duration
+        }
+    )
+    boundaries = [0.0]
+    for part in range(1, part_count):
+        target = duration * part / part_count
+        available = [value for value in candidates if value > boundaries[-1]]
+        remaining = part_count - part - 1
+        reservable = available[: len(available) - remaining] if remaining else available
+        boundary = min(reservable, key=lambda value: abs(value - target)) if reservable else target
+        boundaries.append(boundary)
+    boundaries.append(duration)
+
+    def title_at(start: float, index: int) -> str:
+        segment = next(
+            (item for item in segments if item.end > start and item.text.strip()),
+            None,
+        )
+        if segment is None:
+            return f"Topic {index + 1}"
+        words = re.findall(r"[\w'’-]+", segment.text, re.UNICODE)[:8]
+        return " ".join(words).strip() or f"Topic {index + 1}"
+
+    return [
+        Topic(title_at(boundaries[index], index), boundaries[index], boundaries[index + 1])
+        for index in range(part_count)
+    ]
 
 
 def topics_from_chapters(chapters: list[dict[str, Any]], duration: float) -> list[Topic] | None:

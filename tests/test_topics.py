@@ -10,6 +10,7 @@ from clipauto.topics import (
     plan_reel_topics,
     split_oversized_topics,
     topics_from_chapters,
+    topics_from_transcript,
 )
 
 SEGMENTS = [
@@ -23,6 +24,15 @@ SEGMENTS = [
 def test_extracts_json_array_from_fenced_model_response():
     value = extract_json_array('Result:\n```json\n[{"title":"A","start":0,"end":5}]\n```')
     assert value == [{"title": "A", "start": 0, "end": 5}]
+
+
+def test_extracts_first_valid_topic_array_after_model_reasoning_noise():
+    value = extract_json_array(
+        '<think>[not valid JSON]</think>\n'
+        '[{"title":"Useful answer","start":0,"end":45}]\nDone.'
+    )
+
+    assert value == [{"title": "Useful answer", "start": 0, "end": 45}]
 
 
 def test_normalizes_gaps_and_overlap_to_sentence_boundary():
@@ -41,6 +51,40 @@ def test_single_topic_covers_entire_video_without_duration_cap():
         [{"title": "Long discussion", "start": 7, "end": 180}], SEGMENTS, duration=240.0
     )
     assert [(topic.start, topic.end) for topic in topics] == [(0.0, 240.0)]
+
+
+def test_normalization_discards_duplicate_model_ranges_and_keeps_useful_topics():
+    topics = normalize_topics(
+        [
+            {"title": "First", "start": 0, "end": 10},
+            {"title": "Duplicate", "start": 0, "end": 10},
+            {"title": "Second", "start": 20, "end": 30},
+        ],
+        [
+            TranscriptSegment(0, 10, "First subject."),
+            TranscriptSegment(10, 20, "Transition."),
+            TranscriptSegment(20, 30, "Second subject."),
+        ],
+        duration=30,
+    )
+
+    assert topics == [Topic("First", 0, 10), Topic("Second", 10, 30)]
+
+
+def test_transcript_fallback_is_readable_contiguous_and_deterministic():
+    segments = [
+        TranscriptSegment(0, 28, "Why sleep quality matters for memory."),
+        TranscriptSegment(28, 55, "A practical evening routine improves sleep."),
+        TranscriptSegment(55, 82, "Morning light helps the body clock."),
+        TranscriptSegment(82, 110, "Consistency matters more than perfection."),
+    ]
+
+    topics = topics_from_transcript(segments, duration=110)
+
+    assert topics == [
+        Topic("Why sleep quality matters for memory", 0, 55),
+        Topic("Morning light helps the body clock", 55, 110),
+    ]
 
 
 @pytest.mark.parametrize(

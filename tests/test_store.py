@@ -76,6 +76,23 @@ def test_replaces_and_orders_topic_clips(tmp_path: Path):
     ]
 
 
+def test_lists_compact_jobs_with_clip_count_without_clip_records(tmp_path: Path):
+    store = JobStore(tmp_path / "jobs.db")
+    job = store.create_batch(["https://youtu.be/one"]).jobs[0]
+    store.replace_clips(
+        job.id,
+        [
+            ClipRecord("one", job.id, 0, "One", 0, 20, "/clips/one.mp4"),
+            ClipRecord("two", job.id, 1, "Two", 20, 40, "/clips/two.mp4"),
+        ],
+    )
+
+    compact = store.list_jobs(job.batch_id, include_clips=False)
+
+    assert compact[0].clip_count == 2
+    assert compact[0].clips == []
+
+
 def test_lists_pending_jobs_after_restart(tmp_path: Path):
     db = tmp_path / "jobs.db"
     store = JobStore(db)

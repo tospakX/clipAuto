@@ -132,6 +132,7 @@ class JobStore:
             cancel_requested=bool(row["cancel_requested"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            clip_count=row["clip_count"] if "clip_count" in set(row.keys()) else 0,
         )
 
     @staticmethod
@@ -154,14 +155,20 @@ class JobStore:
             job = self._row_to_job(row)
             if include_clips:
                 job.clips = self._list_clips(db, job_id)
+                job.clip_count = len(job.clips)
             return job
 
-    def list_jobs(self, batch_id: str) -> list[JobRecord]:
+    def list_jobs(self, batch_id: str, *, include_clips: bool = True) -> list[JobRecord]:
         with self._connection() as db:
             rows = db.execute(
-                "SELECT * FROM jobs WHERE batch_id = ? ORDER BY position", (batch_id,)
+                """SELECT jobs.*,
+                          (SELECT COUNT(*) FROM clips WHERE clips.job_id = jobs.id) AS clip_count
+                   FROM jobs WHERE batch_id = ? ORDER BY position""",
+                (batch_id,),
             ).fetchall()
             jobs = [self._row_to_job(row) for row in rows]
+            if not include_clips:
+                return jobs
             clips = db.execute(
                 """SELECT clips.* FROM clips
                    JOIN jobs ON jobs.id = clips.job_id
@@ -174,20 +181,29 @@ class JobStore:
                 jobs_by_id[row["job_id"]].clips.append(self._row_to_clip(row))
             return jobs
 
-    def get_batch(self, batch_id: str) -> BatchRecord:
+    def get_batch(self, batch_id: str, *, include_clips: bool = True) -> BatchRecord:
         with self._connection() as db:
             row = db.execute("SELECT * FROM batches WHERE id = ?", (batch_id,)).fetchone()
         if row is None:
             raise KeyError(batch_id)
-        return BatchRecord(row["id"], row["created_at"], self.list_jobs(batch_id))
+        return BatchRecord(
+            row["id"],
+            row["created_at"],
+            self.list_jobs(batch_id, include_clips=include_clips),
+        )
 
-    def list_batches(self, limit: int = 20) -> list[BatchRecord]:
+    def list_batches(self, limit: int = 20, *, include_clips: bool = True) -> list[BatchRecord]:
         with self._connection() as db:
             rows = db.execute(
                 "SELECT * FROM batches ORDER BY created_at DESC LIMIT ?", (limit,)
             ).fetchall()
         return [
-            BatchRecord(row["id"], row["created_at"], self.list_jobs(row["id"])) for row in rows
+            BatchRecord(
+                row["id"],
+                row["created_at"],
+                self.list_jobs(row["id"], include_clips=include_clips),
+            )
+            for row in rows
         ]
 
     def delete_finished_history(self) -> tuple[int, list[str]]:

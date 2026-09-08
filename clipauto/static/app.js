@@ -11,27 +11,42 @@ const clearHistory = document.querySelector('#clear-history');
 const exportAll = document.querySelector('#export-all');
 const exportStatus = document.querySelector('#export-status');
 const template = document.querySelector('#job-template');
+const search = document.querySelector('#queue-search');
+const visibleCount = document.querySelector('#visible-count');
+const loadMore = document.querySelector('#load-more');
+const connectionStatus = document.querySelector('#connection-status');
+const filterButtons = [...document.querySelectorAll('.filter-button')];
 
 let batchId = null;
+let currentBatch = null;
+let currentFilter = 'all';
+let displayLimit = 30;
 let pollTimer = null;
+let pollFailures = 0;
+let refreshInFlight = false;
 const outputSpeed = 1.10;
+const clipCache = new Map();
 
 const terminal = new Set(['completed', 'failed', 'cancelled']);
 const stageNames = {
-  waiting: 'Waiting', downloading: 'Downloading', transcribing: 'Transcribing',
-  segmenting: 'Detecting topics', rendering: 'Creating clips', completed: 'Complete',
-  failed: 'Failed', cancelled: 'Cancelled'
+  waiting: 'Waiting',
+  downloading: 'Downloading source',
+  transcribing: 'Transcribing speech',
+  segmenting: 'Detecting topics',
+  rendering: 'Rendering reels',
+  completed: 'Finished',
+  failed: 'Needs attention',
+  cancelled: 'Cancelled'
 };
 
 function parsedCount() {
-  const parts = urls.value.split(/[\s,]+/).filter(Boolean);
-  return new Set(parts).size;
+  return new Set(urls.value.split(/[\s,]+/).filter(Boolean)).size;
 }
 
 urls.addEventListener('input', () => {
   const total = parsedCount();
   count.textContent = `${total} / 200`;
-  count.style.color = total > 200 ? '#b43d2f' : '';
+  count.dataset.overLimit = String(total > 200);
 });
 
 function messageFrom(response) {
@@ -53,7 +68,20 @@ async function api(path, options) {
   return response.json();
 }
 
-form.addEventListener('submit', async (event) => {
+function setConnection(state, label) {
+  connectionStatus.dataset.state = state;
+  connectionStatus.querySelector('b').textContent = label;
+}
+
+function normalizeBatch(batch) {
+  batch.jobs = batch.jobs.map(job => ({
+    ...job,
+    clip_count: job.clip_count ?? job.clips?.length ?? 0
+  }));
+  return batch;
+}
+
+form.addEventListener('submit', async event => {
   event.preventDefault();
   errorBox.hidden = true;
   if (!urls.value.trim()) {
@@ -65,17 +93,21 @@ form.addEventListener('submit', async (event) => {
   submit.disabled = true;
   submit.querySelector('span').textContent = 'Adding…';
   try {
-    const batch = await api('/api/batches', {
-      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({urls: urls.value})
-    });
+    const batch = normalizeBatch(await api('/api/batches', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({urls: urls.value})
+    }));
     batchId = batch.id;
+    currentFilter = 'active';
+    displayLimit = 30;
     urls.value = '';
     urls.dispatchEvent(new Event('input'));
-    queueElement.replaceChildren();
+    clipCache.clear();
     exportStatus.hidden = true;
     renderBatch(batch);
     workspace.scrollIntoView({behavior: 'smooth', block: 'start'});
-    schedulePoll();
+    schedulePoll(500);
   } catch (error) {
     errorBox.textContent = error.message;
     errorBox.hidden = false;
@@ -114,12 +146,30 @@ async function copyText(text) {
   if (!copied) throw new Error('Could not copy the link.');
 }
 
-function renderClips(container, job) {
-  const signature = job.clips.map(clip => `${clip.id}:${clip.title}:${clip.start}:${clip.end}`).join(',');
+function conciseError(message) {
+  const text = message || '';
+  if (/resolve|network|connection|timed out/i.test(text)) {
+    return 'YouTube could not be reached. Check the connection, then retry.';
+  }
+  if (/cookie|sign in|403|age|not a bot/i.test(text)) {
+    return 'YouTube needs browser access. Sign in with Brave, close it, then retry.';
+  }
+  if (/space|disk full/i.test(text)) {
+    return 'Storage is full. Free some space, then retry.';
+  }
+  if (/topic|ollama|json|boundar/i.test(text)) {
+    return 'Topic detection returned an old unusable result. Retry to use automatic recovery.';
+  }
+  const firstLine = text.split('\n', 1)[0].replace(/^[^:]+ failed:\s*/i, '').trim();
+  return firstLine.length > 150 ? `${firstLine.slice(0, 147)}…` : firstLine;
+}
+
+function renderClips(container, element, job, clips) {
+  const signature = clips.map(clip => `${clip.id}:${clip.title}:${clip.start}:${clip.end}`).join(',');
   if (container.dataset.signature === signature) return;
   container.dataset.signature = signature;
   container.replaceChildren();
-  job.clips.forEach((clip, index) => {
+  clips.forEach((clip, index) => {
     const card = document.createElement('article');
     card.className = 'clip-card';
     const video = document.createElement('video');
@@ -141,19 +191,20 @@ function renderClips(container, job) {
     const deleteButton = document.createElement('button');
     deleteButton.className = 'delete-clip';
     deleteButton.type = 'button';
-    deleteButton.textContent = 'Delete clip';
+    deleteButton.textContent = 'Delete';
     deleteButton.addEventListener('click', async () => {
       if (!window.confirm(`Delete clip “${clip.title}”?`)) return;
       deleteButton.disabled = true;
       deleteButton.textContent = 'Deleting…';
       try {
         await api(`/api/clips/${encodeURIComponent(clip.id)}`, {method: 'DELETE'});
-        showJobNotice(container.closest('.job'), 'Clip deleted.');
+        clipCache.delete(job.id);
+        showJobNotice(element, 'Clip deleted.');
         await refresh();
       } catch (error) {
         deleteButton.disabled = false;
-        deleteButton.textContent = 'Delete clip';
-        showJobNotice(container.closest('.job'), error.message, true);
+        deleteButton.textContent = 'Delete';
+        showJobNotice(element, error.message, true);
       }
     });
     actions.append(link, deleteButton);
@@ -163,86 +214,113 @@ function renderClips(container, job) {
   });
 }
 
+async function toggleClips(element) {
+  const button = element.querySelector('.clips-toggle');
+  const clips = element.querySelector('.clips');
+  const expanded = button.getAttribute('aria-expanded') === 'true';
+  button.setAttribute('aria-expanded', String(!expanded));
+  if (expanded) {
+    clips.replaceChildren();
+    delete clips.dataset.signature;
+    updateClipsToggle(element);
+    return;
+  }
+  const job = element.latestJob;
+  clips.innerHTML = '<p class="clips-loading">Loading clip details…</p>';
+  updateClipsToggle(element);
+  try {
+    let records = clipCache.get(job.id);
+    if (!records) {
+      records = await api(`/api/jobs/${encodeURIComponent(job.id)}/clips`);
+      clipCache.set(job.id, records);
+    }
+    if (button.getAttribute('aria-expanded') === 'true') {
+      renderClips(clips, element, job, records);
+    }
+  } catch (error) {
+    button.setAttribute('aria-expanded', 'false');
+    clips.replaceChildren();
+    showJobNotice(element, error.message, true);
+    updateClipsToggle(element);
+  }
+}
+
 function getJobElement(job) {
   let element = queueElement.querySelector(`[data-job-id="${job.id}"]`);
-  if (!element) {
-    element = template.content.firstElementChild.cloneNode(true);
-    element.dataset.jobId = job.id;
-    const clips = element.querySelector('.clips');
-    const clipsToggle = element.querySelector('.clips-toggle');
-    clips.id = `clips-${job.id}`;
-    clipsToggle.setAttribute('aria-controls', clips.id);
-    clipsToggle.addEventListener('click', () => {
-      const expanded = clipsToggle.getAttribute('aria-expanded') === 'true';
-      clipsToggle.setAttribute('aria-expanded', String(!expanded));
-      if (expanded) {
-        clips.replaceChildren();
-        delete clips.dataset.signature;
-      } else if (element.latestJob) {
-        renderClips(clips, element.latestJob);
-      }
-      updateClipsToggle(element);
-    });
-    element.querySelector('.cancel-button').addEventListener('click', async (event) => {
-      event.currentTarget.disabled = true;
-      try { await api(`/api/jobs/${job.id}/cancel`, {method: 'POST'}); }
-      catch (error) {
-        event.currentTarget.disabled = false;
-        showJobNotice(element, error.message, true);
-      }
-    });
-    element.querySelector('.copy-button').addEventListener('click', async () => {
-      try {
-        await copyText(element.latestJob?.url || job.url);
-        showJobNotice(element, 'Video link copied.');
-      } catch (error) {
-        showJobNotice(element, error.message, true);
-      }
-    });
-    element.querySelector('.retry-button').addEventListener('click', async (event) => {
-      const button = event.currentTarget;
-      button.disabled = true;
-      button.textContent = 'Queuing…';
-      try {
-        await api(`/api/jobs/${job.id}/retry`, {method: 'POST'});
-        showJobNotice(element, 'Queued for another attempt.');
+  if (element) return element;
+  element = template.content.firstElementChild.cloneNode(true);
+  element.dataset.jobId = job.id;
+  const clips = element.querySelector('.clips');
+  const clipsToggle = element.querySelector('.clips-toggle');
+  clips.id = `clips-${job.id}`;
+  clipsToggle.setAttribute('aria-controls', clips.id);
+  clipsToggle.addEventListener('click', () => toggleClips(element));
+  element.querySelector('.cancel-button').addEventListener('click', async event => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = 'Cancelling…';
+    try {
+      await api(`/api/jobs/${job.id}/cancel`, {method: 'POST'});
+      showJobNotice(element, 'Cancellation requested.');
+      schedulePoll(250);
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = 'Cancel';
+      showJobNotice(element, error.message, true);
+    }
+  });
+  element.querySelector('.copy-button').addEventListener('click', async () => {
+    try {
+      await copyText(element.latestJob?.url || job.url);
+      showJobNotice(element, 'Video link copied.');
+    } catch (error) {
+      showJobNotice(element, error.message, true);
+    }
+  });
+  element.querySelector('.retry-button').addEventListener('click', async event => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = 'Queuing…';
+    try {
+      await api(`/api/jobs/${job.id}/retry`, {method: 'POST'});
+      clipCache.delete(job.id);
+      showJobNotice(element, 'Queued. Reusable analysis will be kept.');
+      await refresh();
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = 'Retry';
+      showJobNotice(element, error.message, true);
+    }
+  });
+  element.querySelector('.remove-button').addEventListener('click', async event => {
+    const button = event.currentTarget;
+    const name = element.querySelector('.job-title').textContent;
+    if (!window.confirm(`Delete “${name}” and all of its clips?`)) return;
+    button.disabled = true;
+    button.textContent = 'Deleting…';
+    try {
+      const result = await api(`/api/jobs/${job.id}`, {method: 'DELETE'});
+      clipCache.delete(job.id);
+      if (result.batch_deleted) {
+        clearTimeout(pollTimer);
+        batchId = null;
+        currentBatch = null;
+        workspace.hidden = true;
+      } else {
         await refresh();
-      } catch (error) {
-        button.disabled = false;
-        button.textContent = 'Retry';
-        showJobNotice(element, error.message, true);
       }
-    });
-    element.querySelector('.remove-button').addEventListener('click', async (event) => {
-      const button = event.currentTarget;
-      const name = element.querySelector('.job-title').textContent;
-      if (!window.confirm(`Delete “${name}” and all of its clips?`)) return;
-      button.disabled = true;
-      button.textContent = 'Deleting…';
-      try {
-        const result = await api(`/api/jobs/${job.id}`, {method: 'DELETE'});
-        element.remove();
-        if (result.batch_deleted) {
-          clearTimeout(pollTimer);
-          batchId = null;
-          workspace.hidden = true;
-        } else {
-          await refresh();
-        }
-      } catch (error) {
-        button.disabled = false;
-        button.textContent = 'Delete video';
-        showJobNotice(element, error.message, true);
-      }
-    });
-    queueElement.append(element);
-  }
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = 'Delete video';
+      showJobNotice(element, error.message, true);
+    }
+  });
   return element;
 }
 
 function updateClipsToggle(element) {
   const button = element.querySelector('.clips-toggle');
-  const clipCount = element.latestJob?.clips.length || 0;
+  const clipCount = element.latestJob?.clip_count || 0;
   const expanded = button.getAttribute('aria-expanded') === 'true';
   button.hidden = clipCount === 0;
   button.textContent = `${expanded ? 'Hide' : 'Show'} ${clipCount} ${clipCount === 1 ? 'clip' : 'clips'}`;
@@ -251,15 +329,13 @@ function updateClipsToggle(element) {
 function renderJob(job) {
   const element = getJobElement(job);
   element.latestJob = job;
-  if (element.dataset.updatedAt === job.updated_at) return;
-  element.dataset.updatedAt = job.updated_at;
   const percent = Math.round(job.progress * 100);
   const stage = job.stage === 'rendering' && job.planned_clips
-    ? `Creating ${job.planned_clips} ${job.planned_clips === 1 ? 'clip' : 'clips'}`
+    ? `Rendering ${job.planned_clips} ${job.planned_clips === 1 ? 'clip' : 'clips'}`
     : (stageNames[job.stage] || job.stage);
   element.dataset.status = job.status;
-  element.querySelector('.job-index').textContent = `Video ${String(job.position + 1).padStart(2, '0')}`;
-  element.querySelector('.job-title').textContent = job.title || 'Reading video details…';
+  element.querySelector('.job-index').textContent = `Video ${String(job.position + 1).padStart(3, '0')}`;
+  element.querySelector('.job-title').textContent = job.title || 'Waiting for video details';
   element.querySelector('.job-url').textContent = job.url;
   element.querySelector('.stage-label').textContent = stage;
   element.querySelector('.progress-value').textContent = `${percent}%`;
@@ -267,88 +343,172 @@ function renderJob(job) {
   track.setAttribute('aria-valuenow', String(percent));
   track.setAttribute('aria-label', `${stage}: ${percent}%`);
   track.querySelector('span').style.width = `${percent}%`;
-  element.querySelector('.cancel-button').hidden = terminal.has(job.status);
+  const cancel = element.querySelector('.cancel-button');
+  cancel.hidden = terminal.has(job.status);
+  if (!cancel.hidden && !job.cancel_requested) {
+    cancel.disabled = false;
+    cancel.textContent = 'Cancel';
+  }
   element.querySelector('.remove-button').hidden = job.status === 'running';
   const retry = element.querySelector('.retry-button');
   retry.hidden = !['failed', 'cancelled'].includes(job.status);
-  if (retry.hidden) retry.disabled = false;
-  if (!retry.disabled) retry.textContent = 'Retry';
-  const failure = element.querySelector('.job-error');
-  failure.textContent = job.error || '';
-  failure.hidden = !job.error;
-  updateClipsToggle(element);
-  if (element.querySelector('.clips-toggle').getAttribute('aria-expanded') === 'true') {
-    renderClips(element.querySelector('.clips'), job);
+  if (!retry.hidden) {
+    retry.disabled = false;
+    retry.textContent = 'Retry';
   }
+  const details = element.querySelector('.error-details');
+  details.hidden = !job.error;
+  element.querySelector('.error-summary').textContent = job.error ? conciseError(job.error) : '';
+  element.querySelector('.job-error').textContent = job.error || '';
+  updateClipsToggle(element);
+  return element;
 }
 
-function renderBatch(batch) {
+function countsFor(batch) {
+  return {
+    all: batch.jobs.length,
+    active: batch.jobs.filter(job => !terminal.has(job.status)).length,
+    completed: batch.jobs.filter(job => job.status === 'completed').length,
+    failed: batch.jobs.filter(job => ['failed', 'cancelled'].includes(job.status)).length
+  };
+}
+
+function jobMatches(job) {
+  const filterMatch = currentFilter === 'all'
+    || (currentFilter === 'active' && !terminal.has(job.status))
+    || (currentFilter === 'completed' && job.status === 'completed')
+    || (currentFilter === 'failed' && ['failed', 'cancelled'].includes(job.status));
+  if (!filterMatch) return false;
+  const needle = search.value.trim().toLocaleLowerCase();
+  if (!needle) return true;
+  return `${job.position + 1} ${job.title || ''} ${job.url}`.toLocaleLowerCase().includes(needle);
+}
+
+function renderQueue() {
+  if (!currentBatch) return;
+  const matching = currentBatch.jobs.filter(jobMatches);
+  const visible = matching.slice(0, displayLimit);
+  const fragment = document.createDocumentFragment();
+  visible.forEach(job => fragment.append(renderJob(job)));
+  queueElement.replaceChildren(fragment);
+  visibleCount.textContent = matching.length
+    ? `Showing ${visible.length} of ${matching.length}`
+    : 'No matching videos';
+  loadMore.hidden = visible.length >= matching.length;
+  loadMore.textContent = `Show ${Math.min(30, matching.length - visible.length)} more`;
+}
+
+function renderBatch(batch, {preferActive = false} = {}) {
+  currentBatch = normalizeBatch(batch);
   workspace.hidden = false;
-  queueElement.setAttribute('aria-busy', String(batch.jobs.some(job => !terminal.has(job.status))));
-  batch.jobs.forEach(renderJob);
-  const currentIds = new Set(batch.jobs.map(job => job.id));
-  queueElement.querySelectorAll('[data-job-id]').forEach(element => {
-    if (!currentIds.has(element.dataset.jobId)) element.remove();
+  const counts = countsFor(currentBatch);
+  if (preferActive && counts.active) currentFilter = 'active';
+  queueElement.setAttribute('aria-busy', String(counts.active > 0));
+  document.querySelector('#count-all').textContent = counts.all;
+  document.querySelector('#count-active').textContent = counts.active;
+  document.querySelector('#count-completed').textContent = counts.completed;
+  document.querySelector('#count-failed').textContent = counts.failed;
+  filterButtons.forEach(button => {
+    button.setAttribute('aria-pressed', String(button.dataset.filter === currentFilter));
   });
-  const completed = batch.jobs.filter(job => job.status === 'completed');
-  const failed = batch.jobs.filter(job => job.status === 'failed').length;
-  const active = batch.jobs.filter(job => !terminal.has(job.status)).length;
-  const clipCount = completed.reduce((total, job) => total + job.clips.length, 0);
-  summary.textContent = `${completed.length}/${batch.jobs.length} videos complete · ${clipCount} clips · ${active} active${failed ? ` · ${failed} failed` : ''}`;
+  const clipCount = currentBatch.jobs.reduce((total, job) => total + job.clip_count, 0);
+  summary.textContent = `${clipCount.toLocaleString()} clips across ${counts.all} videos`;
   downloadAll.href = `/api/batches/${batch.id}/download`;
   downloadAll.hidden = clipCount === 0;
   exportAll.hidden = clipCount === 0;
+  renderQueue();
 }
 
 async function refresh() {
-  if (!batchId) return;
+  if (!batchId || refreshInFlight) return;
+  refreshInFlight = true;
+  setConnection('connecting', pollFailures ? 'Retrying' : 'Refreshing');
   try {
-    const batch = await api(`/api/batches/${batchId}`);
+    const batch = await api(`/api/batches/${batchId}?include_clips=false`);
+    pollFailures = 0;
     renderBatch(batch);
+    setConnection('live', 'Live');
     if (batch.jobs.some(job => !terminal.has(job.status))) schedulePoll();
   } catch (error) {
-    summary.textContent = `Status update failed · ${error.message}`;
-    schedulePoll(4000);
+    pollFailures += 1;
+    setConnection('offline', navigator.onLine ? 'Reconnecting' : 'Offline');
+    summary.textContent = `Updates paused · ${error.message}`;
+    schedulePoll(Math.min(15000, 2000 * 2 ** pollFailures));
+  } finally {
+    refreshInFlight = false;
   }
 }
 
 function schedulePoll(delay = 2000) {
   clearTimeout(pollTimer);
+  if (document.hidden) return;
   pollTimer = setTimeout(refresh, delay);
 }
 
 async function restoreLatestBatch() {
+  setConnection('connecting', 'Connecting');
   try {
-    const batches = await api('/api/batches');
+    const batches = await api('/api/batches?include_clips=false');
+    setConnection('live', 'Live');
     if (batches.length) {
       batchId = batches[0].id;
-      renderBatch(batches[0]);
+      renderBatch(batches[0], {preferActive: true});
       if (batches[0].jobs.some(job => !terminal.has(job.status))) schedulePoll();
     }
-  } catch (_) { /* first-run empty state remains useful */ }
+  } catch (_) {
+    setConnection('offline', navigator.onLine ? 'Unavailable' : 'Offline');
+  }
 }
 
-clearHistory.addEventListener('click', async () => {
-  const confirmed = window.confirm(
-    'Delete completed, failed, cancelled, and waiting videos? The active video will be kept.'
-  );
-  if (!confirmed) return;
+filterButtons.forEach(button => button.addEventListener('click', () => {
+  currentFilter = button.dataset.filter;
+  displayLimit = 30;
+  filterButtons.forEach(item => {
+    item.setAttribute('aria-pressed', String(item === button));
+  });
+  renderQueue();
+}));
 
+search.addEventListener('input', () => {
+  displayLimit = 30;
+  renderQueue();
+});
+
+loadMore.addEventListener('click', () => {
+  displayLimit += 30;
+  renderQueue();
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) clearTimeout(pollTimer);
+  else if (batchId) refresh();
+});
+
+window.addEventListener('offline', () => setConnection('offline', 'Offline'));
+window.addEventListener('online', () => {
+  setConnection('connecting', 'Reconnecting');
+  if (batchId) refresh();
+});
+
+clearHistory.addEventListener('click', async () => {
+  if (!window.confirm('Delete finished, failed, cancelled, and waiting videos? Active work stays.')) return;
   clearHistory.disabled = true;
   clearHistory.textContent = 'Clearing…';
   try {
     await api('/api/history', {method: 'DELETE'});
     clearTimeout(pollTimer);
-    const batches = await api('/api/batches');
-    queueElement.replaceChildren();
+    clipCache.clear();
+    const batches = await api('/api/batches?include_clips=false');
     if (!batches.length) {
       batchId = null;
+      currentBatch = null;
+      queueElement.replaceChildren();
       workspace.hidden = true;
       exportStatus.hidden = true;
       return;
     }
     batchId = batches[0].id;
-    renderBatch(batches[0]);
+    renderBatch(batches[0], {preferActive: true});
     if (batches[0].jobs.some(job => !terminal.has(job.status))) schedulePoll();
   } catch (error) {
     window.alert(error.message);

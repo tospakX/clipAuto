@@ -72,6 +72,30 @@ def test_reads_batch_and_cancels_job(tmp_path: Path):
     assert queue.cancelled == [batch.jobs[0].id]
 
 
+def test_compact_batch_response_defers_clip_records_to_lazy_endpoint(tmp_path: Path):
+    client, store, _ = make_client(tmp_path)
+    job = store.create_batch(["https://youtu.be/one"]).jobs[0]
+    store.replace_clips(
+        job.id,
+        [
+            ClipRecord("one", job.id, 0, "First", 0, 20, "/clips/one.mp4"),
+            ClipRecord("two", job.id, 1, "Second", 20, 40, "/clips/two.mp4"),
+        ],
+    )
+
+    with client:
+        compact = client.get(f"/api/batches/{job.batch_id}?include_clips=false")
+        clips = client.get(f"/api/jobs/{job.id}/clips")
+        full = client.get(f"/api/batches/{job.batch_id}")
+
+    compact_job = compact.json()["jobs"][0]
+    assert compact.status_code == 200
+    assert compact_job["clip_count"] == 2
+    assert "clips" not in compact_job
+    assert [clip["id"] for clip in clips.json()] == ["one", "two"]
+    assert [clip["id"] for clip in full.json()["jobs"][0]["clips"]] == ["one", "two"]
+
+
 def test_serves_preview_download_and_backend_zip(tmp_path: Path):
     client, store, _ = make_client(tmp_path)
     batch = store.create_batch(["https://youtu.be/one"])

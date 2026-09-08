@@ -25,6 +25,11 @@ Open <http://127.0.0.1:8765>. Paste one URL per line (mixed whitespace and comma
 
 yt-dlp parses timestamp lists in the video description into chapter metadata. When that metadata has valid titles and ordered start times, ClipAuto uses those exact starts and makes the topics contiguous through the full video. Malformed or missing chapter metadata falls back to Ollama. ClipAuto checks Ollama through its local API and automatically chooses the installed completion model with the smallest parameter count; it never downloads an Ollama model. The default faster-whisper model is `small`, and its weights are downloaded by faster-whisper on first use if they are not already cached.
 
+Local models sometimes return reasoning text, malformed JSON, duplicate ranges, or no usable
+response. ClipAuto repairs usable model topics and automatically falls back to deterministic
+transcript-based boundaries when repair is not possible. A bad Ollama response no longer fails the
+whole video, while explicit cancellation still stops processing immediately.
+
 After segmentation, ClipAuto keeps the natural chapter/Ollama topic boundaries and cleans them up in order. Sponsor-only topics are removed wherever they occur, including common labels such as Sponsor, Sponsored message, Advertisement, Ad read/break, Commercial break, Paid promotion, Partner message, or “a word from our sponsor”; a topic combining sponsor and real content with ` + ` is preserved. Exact leading Intro/Introduction/Opening/Video Intro/Channel Intro sections and exact trailing Outro/Conclusion/Ending/Closing/Thanks for watching/End screen/Subscribe/Call to action sections are removed. Descriptive edge sections are removed only when they are 10 seconds or shorter. Removed internal ads create hard gaps that later grouping cannot cross. ClipAuto then splits an individually oversized topic at transcript or word boundaries when it can form full reels and combines adjacent useful short topics within each uninterrupted content run toward the preferred 44–66 source-second range.
 
 Every finished clip plays at 1.10× speed. Video, audio, burned-in subtitles, progress reporting, and the duration shown in the interface stay synchronized; the source topic boundaries remain unchanged.
@@ -45,6 +50,10 @@ Queued and interrupted jobs resume automatically from SQLite after the restart.
 ## Queue and recovery
 
 The default is one full pipeline worker, so only one video moves through the pipeline at a time. ClipAuto keeps the loaded Whisper model available between sequential videos and renders up to two clips from the current video concurrently. This avoids repeated model startup and improves FFmpeg throughput without allowing different videos' Whisper, Ollama, and rendering stages to collide. Waiting jobs live in SQLite and a clean application restart resumes interrupted or queued work in input order. A user-cancelled job stays cancelled. Model reuse is disabled automatically when `CLIPAUTO_WORKER_COUNT` is above one so separate worker threads do not share one inference instance.
+
+Completed transcriptions are cached beside the managed source. If rendering or topic planning
+fails, **Retry** preserves those artifacts and skips Whisper when the source still matches. Corrupt
+or stale cache files are ignored safely and rebuilt.
 
 Advanced users can change concurrency, model, storage, and bind address with environment variables:
 
@@ -79,7 +88,17 @@ data/
         └── ...
 ```
 
-Individual preview/download responses stream files from disk. Preview players start collapsed and are created only after selecting **Show clips**, keeping batches with hundreds of clips responsive. **Download all** creates a temporary ZIP on the backend with every clip from every completed video in the batch; failed, cancelled, and still-running videos are excluded. The temporary ZIP is deleted after the response finishes.
+The production queue opens on active work, provides All/Active/Finished/Needs attention filters,
+searches titles and URLs, and renders at most 30 matching videos at a time. Long technical errors
+stay collapsed behind an actionable summary. Polling pauses in background tabs and reconnects with
+backoff when the server is unavailable.
+
+Individual preview/download responses stream files from disk. Preview players start collapsed and
+are created only after selecting **Show clips**. Poll responses carry only clip counts; full clip
+metadata is fetched lazily for the one video being opened. This keeps batches with hundreds of
+videos and thousands of clips responsive. **Download all** creates a temporary ZIP on the backend
+with every clip from every completed video in the batch; failed, cancelled, and still-running
+videos are excluded. The temporary ZIP is deleted after the response finishes.
 
 **Export MP4s** copies every completed clip into one new flat `ClipAuto-*` folder under `~/Downloads`, with video and topic numbers in each filename. It does not create a ZIP and does not load the files into memory. Set `CLIPAUTO_EXPORT_DIR` to use a different destination.
 
@@ -89,7 +108,9 @@ After that atomic commit, ClipAuto removes superseded media and the downloaded s
 
 Rendering builds the decorative blurred background at low resolution before scaling it to the 1080×1920 delivery frame, while the foreground and subtitles remain full resolution. FFmpeg uses the faster x264 preset, and Whisper uses greedy timestamped decoding; these favor throughput while preserving the output format and topic boundaries.
 
-Queue polling skips unchanged video cards. This keeps large 200-video batches responsive instead of rebuilding every card on each status refresh.
+Queue polling transfers compact video state, skips background-tab refreshes, and renders only the
+visible filtered window. This keeps 200-video batches responsive instead of moving thousands of
+clip records and rebuilding every card on each status refresh.
 
 ClipAuto never loads a complete video or ZIP into memory. Use **Clear history** in the queue header to remove completed, failed, cancelled, and waiting records plus their generated files. A video that is actively processing is preserved.
 

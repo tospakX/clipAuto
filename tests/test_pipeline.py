@@ -722,3 +722,64 @@ async def test_validated_generation_replaces_database_before_old_media_cleanup(t
     assert all(not Path(clip.path).parent.name.startswith(".") for clip in completed.clips)
     assert not old_path.exists()
     assert not source_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_retry_reuses_cached_transcript_after_render_failure(tmp_path: Path):
+    data_dir = tmp_path / "data"
+    store = JobStore(tmp_path / "jobs.db")
+    job = store.create_batch(["https://youtu.be/retry-cache"]).jobs[0]
+    source = data_dir / "jobs" / job.id / "source.mp4"
+
+    async def downloader(url, work_dir, progress, cancel_event):
+        source.parent.mkdir(parents=True, exist_ok=True)
+        if not source.exists():
+            source.write_bytes(b"same source on both attempts")
+        return DownloadResult(source, "Cached talk", 60, False)
+
+    class Transcriber:
+        calls = 0
+
+        def transcribe(self, path, progress):
+            self.calls += 1
+            return TranscriptionResult(
+                [TranscriptSegment(0, 60, "One complete cached topic.")],
+                60,
+                "en",
+                "cpu",
+            )
+
+    class Segmenter:
+        async def segment(self, transcript, duration):
+            return '[{"title":"Cached topic","start":0,"end":60}]'
+
+    render_attempt = 0
+
+    async def renderer(source, output_dir, topics, segments, progress, cancel_event):
+        nonlocal render_attempt
+        render_attempt += 1
+        if render_attempt == 1:
+            raise RuntimeError("encoder interrupted")
+        output_dir.mkdir(parents=True)
+        output = output_dir / "clip_01.mp4"
+        output.write_bytes(b"clip")
+        return [output]
+
+    transcriber = Transcriber()
+    pipeline = Pipeline(
+        store,
+        data_dir,
+        transcriber,
+        Segmenter(),
+        downloader=downloader,
+        renderer=renderer,
+        validator=_accept_test_render,
+    )
+
+    with pytest.raises(RuntimeError, match="encoder interrupted"):
+        await pipeline.process(job.id)
+    store.retry_job(job.id)
+    await pipeline.process(job.id)
+
+    assert transcriber.calls == 1
+    assert store.get_job(job.id).status is JobStatus.COMPLETED

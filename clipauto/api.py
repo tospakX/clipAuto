@@ -132,16 +132,11 @@ def create_app(
     @app.post("/api/jobs/{job_id}/retry", status_code=status.HTTP_202_ACCEPTED)
     async def retry_job(job_id: str) -> dict[str, str]:
         try:
-            work_dir, _ = store.retry_job(job_id)
+            store.retry_job(job_id)
         except KeyError as error:
             raise HTTPException(status_code=404, detail="Video not found") from error
         except ValueError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
-        if work_dir:
-            jobs_root = (settings.data_dir / "jobs").resolve()
-            candidate = Path(work_dir).resolve()
-            if candidate != jobs_root and candidate.is_relative_to(jobs_root):
-                await asyncio.to_thread(shutil.rmtree, candidate, ignore_errors=True)
         await queue.enqueue(job_id)
         return {"status": "queued"}
 

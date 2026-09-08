@@ -372,7 +372,7 @@ def test_removes_one_waiting_video_before_it_starts(tmp_path: Path):
     assert store.get_job(keep.id).status is JobStatus.QUEUED
 
 
-def test_retries_failed_video_after_removing_stale_managed_files(tmp_path: Path):
+def test_retries_failed_video_without_deleting_reusable_managed_files(tmp_path: Path):
     client, store, queue = make_client(tmp_path)
     job = store.create_batch(["https://youtu.be/retry"]).jobs[0]
     work_dir = tmp_path / "data" / "jobs" / job.id
@@ -393,7 +393,8 @@ def test_retries_failed_video_after_removing_stale_managed_files(tmp_path: Path)
 
     assert response.status_code == 202
     assert response.json() == {"status": "queued"}
-    assert not work_dir.exists()
+    assert work_dir.is_dir()
+    assert (work_dir / "stale.mp4").read_bytes() == b"stale"
     assert queue.enqueued == [job.id]
     retried = store.get_job(job.id)
     assert retried.status is JobStatus.QUEUED
